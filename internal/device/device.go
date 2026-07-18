@@ -51,7 +51,62 @@ type TemperatureControl interface {
 	TemperatureRange() (min, max int)
 }
 
-// OpenFunc opens a specific discovered hidraw device as a Device.
+// DPIControl is implemented by devices with an adjustable sensor DPI
+// (e.g. mice). Min/max/step describe the device's supported range so the
+// GUI can build an appropriately bounded control.
+type DPIControl interface {
+	DPIRange() (min, max, step int)
+	SetDPI(dpi int) error
+	DPI() (int, error)
+}
+
+// BatteryStatus is implemented by battery-powered wireless devices.
+type BatteryStatus interface {
+	Battery() (percent int, charging bool, err error)
+}
+
+// ReportRateControl is implemented by devices with a selectable USB
+// report ("polling") rate, in Hz.
+type ReportRateControl interface {
+	ReportRateOptions() []int
+	SetReportRate(hz int) error
+	ReportRate() (int, error)
+}
+
+// RGBControl is implemented by devices with an addressable single-color
+// RGB light (e.g. a logo).
+type RGBControl interface {
+	SetColor(r, g, b uint8) error
+}
+
+// ButtonInfo describes one of a device's remappable physical controls.
+type ButtonInfo struct {
+	ID   uint16 // opaque, device-defined control ID
+	Name string // human-readable name, e.g. "Back Button"
+}
+
+// ButtonRemapControl is implemented by devices whose physical buttons can
+// be remapped to a different action. RemapButton's target values come
+// from internal/uinput's Targets list (KEY_*/BTN_* codes); passing 0
+// restores a button's native behavior.
+//
+// Remapping works by diverting the button so the device reports presses
+// as raw events instead of its normal click, which the implementation
+// then translates into a synthetic input event. That means a remapped
+// button only works while the device is open and being actively
+// translated — see each implementation's docs for exactly what happens if
+// the controlling process isn't running.
+type ButtonRemapControl interface {
+	Buttons() ([]ButtonInfo, error)
+	RemapButton(buttonID uint16, target uint16) error
+}
+
+// OpenFunc opens a specific discovered hidraw device as a Device. Some
+// physical devices expose more than one hidraw node for the same product
+// (e.g. a wireless receiver has one hidraw interface per USB interface);
+// OpenFunc may return (nil, nil) to say "not an error, but this particular
+// node isn't the one to use," and Discover will silently skip it rather
+// than treating it as a device or an error.
 type OpenFunc func(backend hid.Backend, info hid.Info) (Device, error)
 
 type plugin struct {
@@ -88,6 +143,9 @@ func Discover(backend hid.Backend) ([]Device, []error) {
 				if err != nil {
 					errs = append(errs, fmt.Errorf("device: open %s: %w", info.Path, err))
 					continue
+				}
+				if d == nil {
+					continue // OpenFunc chose to skip this node; not an error
 				}
 				devices = append(devices, d)
 			}

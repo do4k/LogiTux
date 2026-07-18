@@ -16,7 +16,7 @@ func (f *fakeBackend) Enumerate(vendorID, productID uint16) ([]hid.Info, error) 
 	return f.infos[productID], nil
 }
 
-func (f *fakeBackend) Open(info hid.Info) (hid.Writer, error) {
+func (f *fakeBackend) Open(info hid.Info) (hid.Handle, error) {
 	if err, ok := f.openErrs[info.Path]; ok {
 		return nil, err
 	}
@@ -80,5 +80,35 @@ func TestDiscoverCollectsOpenErrorsWithoutFailingOthers(t *testing.T) {
 	}
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+}
+
+func TestDiscoverSkipsNilNilWithoutError(t *testing.T) {
+	plugins = nil
+	// Simulates a multi-interface physical device (e.g. a receiver): only
+	// the canonical node (hidraw0) should produce a device.
+	Register(0x046d, []uint16{0xc539}, func(backend hid.Backend, info hid.Info) (Device, error) {
+		if info.Path != "/dev/hidraw0" {
+			return nil, nil
+		}
+		return &fakeDevice{info: Info{Name: "Test Receiver", Serial: info.Serial}}, nil
+	})
+
+	backend := &fakeBackend{
+		infos: map[uint16][]hid.Info{
+			0xc539: {
+				{Path: "/dev/hidraw0", VendorID: 0x046d, ProductID: 0xc539, Serial: "R1"},
+				{Path: "/dev/hidraw1", VendorID: 0x046d, ProductID: 0xc539, Serial: "R1"},
+				{Path: "/dev/hidraw2", VendorID: 0x046d, ProductID: 0xc539, Serial: "R1"},
+			},
+		},
+	}
+
+	devices, errs := Discover(backend)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device (the rest skipped via nil,nil), got %d", len(devices))
 	}
 }

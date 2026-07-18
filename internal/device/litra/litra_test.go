@@ -2,6 +2,7 @@ package litra
 
 import (
 	"bytes"
+	"io"
 	"testing"
 
 	"logitux/internal/device"
@@ -25,12 +26,18 @@ func (w *fakeWriter) Close() error {
 	return nil
 }
 
+// Read is never called by the Litra plugin (it's write-only), but is
+// required to satisfy hid.Handle.
+func (w *fakeWriter) Read(data []byte) (int, error) {
+	return 0, io.EOF
+}
+
 type fakeBackend struct {
 	writer *fakeWriter
 }
 
 func (b *fakeBackend) Enumerate(vendorID, productID uint16) ([]hid.Info, error) { return nil, nil }
-func (b *fakeBackend) Open(info hid.Info) (hid.Writer, error)                   { return b.writer, nil }
+func (b *fakeBackend) Open(info hid.Info) (hid.Handle, error)                   { return b.writer, nil }
 
 func newTestLight(t *testing.T) (*Light, *fakeWriter) {
 	t.Helper()

@@ -19,6 +19,17 @@ type DeviceState struct {
 	Power       bool `json:"power"`
 	Brightness  int  `json:"brightness"`
 	Temperature int  `json:"temperature"`
+
+	DPI        int  `json:"dpi,omitempty"`
+	ReportRate int  `json:"report_rate,omitempty"`
+	Red        byte `json:"red,omitempty"`
+	Green      byte `json:"green,omitempty"`
+	Blue       byte `json:"blue,omitempty"`
+
+	// ButtonRemaps maps a device-defined control ID to the uinput target
+	// code (see internal/uinput.Targets) it's remapped to. Absent entries
+	// mean "default (unremapped)".
+	ButtonRemaps map[uint16]uint16 `json:"button_remaps,omitempty"`
 }
 
 // Store is a JSON-backed, serial-number-keyed table of DeviceState,

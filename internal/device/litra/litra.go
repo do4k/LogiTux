@@ -49,7 +49,7 @@ func init() {
 
 // Light is a device.Device for a single connected Litra Glow or Beam.
 type Light struct {
-	conn hid.Writer
+	conn hid.Handle
 	info device.Info
 }
 

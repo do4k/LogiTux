@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -23,7 +24,12 @@ func TestSetThenReopenRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	want := DeviceState{Power: true, Brightness: 42, Temperature: 4000}
+	want := DeviceState{
+		Power:        true,
+		Brightness:   42,
+		Temperature:  4000,
+		ButtonRemaps: map[uint16]uint16{0x53: 30},
+	}
 	if err := s.Set("SN1", want); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -36,7 +42,7 @@ func TestSetThenReopenRoundTrips(t *testing.T) {
 	if !ok {
 		t.Fatal("expected state for SN1 after reopen")
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }

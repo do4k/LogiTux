@@ -2,6 +2,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	// Registers itself with the internal/device registry on import. Add
 	// further device plugins the same way to extend LogiTux.
+	_ "logitux/internal/device/gpro"
 	_ "logitux/internal/device/litra"
 	"logitux/internal/hid"
 )
@@ -33,8 +35,19 @@ type appState struct {
 	backend hid.Backend
 	store   *config.Store
 
+	// trayApp is non-nil when the platform supports a system tray; the
+	// tray menu is rebuilt on every refresh (see updateSystemTrayMenu)
+	// since it has a submenu per connected device.
+	trayApp desktop.App
+
 	mu      sync.Mutex
 	current map[string]device.Device // keyed by serial
+
+	// selectedTab remembers which device tab is active across rebuilds
+	// (buildDeviceList runs on every discovery tick). Only ever touched
+	// from the main/UI goroutine — inside fyne.Do in refresh, or from a
+	// widget callback — so it needs no lock, unlike current above.
+	selectedTab string
 }
 
 func main() {
@@ -46,6 +59,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("logitux: %v", err)
 	}
+
+	// All UI updates triggered from background goroutines (the discovery
+	// ticker in main, below) go through fyne.Do; this declares that so
+	// Fyne doesn't print its "not migrated" warning on every startup.
+	app.SetMetadata(fyne.AppMetadata{
+		ID:         "io.github.logitux",
+		Name:       "LogiTux",
+		Migrations: map[string]bool{"fyneDo": true},
+	})
 
 	a := app.NewWithID("io.github.logitux")
 	a.SetIcon(theme.FyneLogo())
@@ -105,12 +127,14 @@ func (a *appState) refresh() {
 			delete(a.current, serial)
 		}
 	}
+	var newlyOpened []device.Device
 	for serial, d := range bySerial {
 		if _, alreadyOpen := a.current[serial]; alreadyOpen {
 			d.Close() // Discover opened a fresh handle; we already have one
 			continue
 		}
 		a.current[serial] = d
+		newlyOpened = append(newlyOpened, d)
 	}
 
 	devices := make([]device.Device, 0, len(a.current))
@@ -122,8 +146,16 @@ func (a *appState) refresh() {
 	})
 	a.mu.Unlock()
 
+	// Outside the lock: applySavedRemaps does blocking device I/O
+	// (RemapButton is a HID++ round-trip), which shouldn't hold up
+	// anything else that needs a.mu meanwhile.
+	for _, d := range newlyOpened {
+		a.applySavedRemaps(d)
+	}
+
 	fyne.Do(func() {
 		a.window.SetContent(buildDeviceList(a, devices))
+		a.updateSystemTrayMenu(devices)
 	})
 }
 
@@ -135,27 +167,50 @@ func (a *appState) closeAll() {
 	}
 }
 
-func (a *appState) setAllPower(on bool) {
-	a.mu.Lock()
-	devices := make([]device.Device, 0, len(a.current))
-	for _, d := range a.current {
-		devices = append(devices, d)
+// setPower is the tray menu's per-device "Turn On"/"Turn Off" action.
+func (a *appState) setPower(d device.Device, pc device.PowerControl, on bool) {
+	if err := pc.SetPower(on); err != nil {
+		log.Printf("logitux: set power on %s: %v", d.Info().Name, err)
+		return
 	}
-	a.mu.Unlock()
-
-	for _, d := range devices {
-		pc, ok := d.(device.PowerControl)
-		if !ok {
-			continue
-		}
-		if err := pc.SetPower(on); err != nil {
-			log.Printf("logitux: set power on %s: %v", d.Info().Name, err)
-			continue
-		}
-		a.saveState(d.Info().Serial, func(s *config.DeviceState) { s.Power = on })
-	}
-	// Reflect the change immediately rather than waiting for the next tick.
+	a.saveState(d.Info().Serial, func(s *config.DeviceState) { s.Power = on })
+	// Reflect the change immediately (in the window and the tray menu's
+	// checkmark-free labels) rather than waiting for the next tick.
 	go a.refresh()
+}
+
+// setDPI is the tray menu's per-device DPI preset action.
+func (a *appState) setDPI(d device.Device, dc device.DPIControl, dpi int) {
+	if err := dc.SetDPI(dpi); err != nil {
+		log.Printf("logitux: set DPI on %s: %v", d.Info().Name, err)
+		return
+	}
+	a.saveState(d.Info().Serial, func(s *config.DeviceState) { s.DPI = dpi })
+	go a.refresh()
+}
+
+// applySavedRemaps re-applies any persisted button remaps to a
+// newly-connected device. Unlike brightness/DPI/etc., which only seed the
+// GUI and wait for the user to interact, remaps are re-applied
+// proactively: a remap that silently stopped working every time the
+// device reconnects would defeat the point of the feature, and — unlike a
+// light turning on unexpectedly — reapplying a remap is inert until the
+// user actually presses that button, so it's not a surprising thing to do
+// automatically.
+func (a *appState) applySavedRemaps(d device.Device) {
+	brc, ok := d.(device.ButtonRemapControl)
+	if !ok {
+		return
+	}
+	saved, ok := a.store.Get(d.Info().Serial)
+	if !ok {
+		return
+	}
+	for cid, target := range saved.ButtonRemaps {
+		if err := brc.RemapButton(cid, target); err != nil {
+			log.Printf("logitux: reapply button remap 0x%x on %s: %v", cid, d.Info().Name, err)
+		}
+	}
 }
 
 // saveState reads the current persisted state for serial (if any), applies
@@ -174,16 +229,79 @@ func setUpSystemTray(a *appState) {
 	if !ok {
 		return // platform has no systray support; window Show/Hide still works
 	}
+	a.trayApp = desk
+	desk.SetSystemTrayIcon(theme.FyneLogo())
+	a.updateSystemTrayMenu(nil) // Show/Hide/Quit only, until the first refresh finds devices
+}
 
-	menu := fyne.NewMenu("LogiTux",
+// updateSystemTrayMenu rebuilds the tray menu so it has a submenu per
+// currently connected device (e.g. "Litra Glow > Turn On / Turn Off")
+// instead of one global action across every light. Called on every
+// refresh, since the device list changes over time. No-op if the platform
+// has no tray support. Must run on the main/UI goroutine.
+func (a *appState) updateSystemTrayMenu(devices []device.Device) {
+	if a.trayApp == nil {
+		return
+	}
+
+	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("Show", func() { a.window.Show() }),
 		fyne.NewMenuItem("Hide", func() { a.window.Hide() }),
-		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("All Lights On", func() { a.setAllPower(true) }),
-		fyne.NewMenuItem("All Lights Off", func() { a.setAllPower(false) }),
-		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Quit", func() { a.fyneApp.Quit() }),
-	)
-	desk.SetSystemTrayMenu(menu)
-	desk.SetSystemTrayIcon(theme.FyneLogo())
+	}
+
+	if len(devices) > 0 {
+		items = append(items, fyne.NewMenuItemSeparator())
+		for _, d := range devices {
+			if item := deviceTrayMenuItem(a, d); item != nil {
+				items = append(items, item)
+			}
+		}
+	}
+
+	items = append(items, fyne.NewMenuItemSeparator(), fyne.NewMenuItem("Quit", func() { a.fyneApp.Quit() }))
+	a.trayApp.SetSystemTrayMenu(fyne.NewMenu("LogiTux", items...))
+}
+
+// dpiPresets are the quick-pick values offered in the tray for devices
+// with adjustable DPI, filtered to whatever range the device reports.
+var dpiPresets = []int{400, 800, 1600, 3200, 6400}
+
+// deviceTrayMenuItem builds a device's tray submenu from whichever quick
+// actions its capabilities support (power, DPI presets, ...), or nil if it
+// has none. Sliders/pickers for finer control stay in the main window;
+// this is only for one-click actions.
+func deviceTrayMenuItem(a *appState, d device.Device) *fyne.MenuItem {
+	var subItems []*fyne.MenuItem
+
+	if pc, ok := d.(device.PowerControl); ok {
+		subItems = append(subItems,
+			fyne.NewMenuItem("Turn On", func() { a.setPower(d, pc, true) }),
+			fyne.NewMenuItem("Turn Off", func() { a.setPower(d, pc, false) }),
+		)
+	}
+
+	if dc, ok := d.(device.DPIControl); ok {
+		min, max, _ := dc.DPIRange()
+		var dpiItems []*fyne.MenuItem
+		for _, dpi := range dpiPresets {
+			if dpi < min || dpi > max {
+				continue
+			}
+			dpiItems = append(dpiItems, fyne.NewMenuItem(fmt.Sprintf("%d DPI", dpi), func() { a.setDPI(d, dc, dpi) }))
+		}
+		if len(dpiItems) > 0 {
+			if len(subItems) > 0 {
+				subItems = append(subItems, fyne.NewMenuItemSeparator())
+			}
+			subItems = append(subItems, dpiItems...)
+		}
+	}
+
+	if len(subItems) == 0 {
+		return nil
+	}
+
+	item := fyne.NewMenuItem(d.Info().Name, nil)
+	item.ChildMenu = fyne.NewMenu("", subItems...)
+	return item
 }

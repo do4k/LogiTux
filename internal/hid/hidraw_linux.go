@@ -26,8 +26,11 @@ type Info struct {
 	Serial    string
 }
 
-// Writer is an open handle to a hidraw device.
-type Writer interface {
+// Handle is an open hidraw device. Write-only protocols (e.g. the Litra
+// plugin) only ever call Write/Close; request/response protocols (e.g.
+// HID++, used by the gpro plugin) also read reports back.
+type Handle interface {
+	Read(data []byte) (int, error)
 	Write(data []byte) (int, error)
 	Close() error
 }
@@ -39,7 +42,7 @@ type Backend interface {
 	// A productID of 0 matches any product for the given vendor.
 	Enumerate(vendorID, productID uint16) ([]Info, error)
 	// Open opens the hidraw device described by info for reading/writing.
-	Open(info Info) (Writer, error)
+	Open(info Info) (Handle, error)
 }
 
 // Default is the real sysfs/dev-backed Backend.
@@ -62,18 +65,27 @@ func (b *sysfsBackend) Enumerate(vendorID, productID uint16) ([]Info, error) {
 	var infos []Info
 	for _, e := range entries {
 		devDir := filepath.Join(b.classPath, e.Name(), "device")
-		vid, pid, err := readIDs(devDir)
+		u, err := readUevent(devDir)
 		if err != nil {
 			continue
 		}
-		if vid != vendorID || (productID != 0 && pid != productID) {
+		if u.vendorID != vendorID || (productID != 0 && u.productID != productID) {
 			continue
 		}
-		serial, _ := readSerial(devDir)
+		serial, err := readSerial(devDir)
+		if err != nil {
+			// No USB iSerialNumber descriptor (common on receivers, and on
+			// the per-peripheral virtual hidraw nodes some kernels expose
+			// for devices paired to one). Fall back to HID_UNIQ, which the
+			// HID core sometimes populates from the device's own protocol
+			// (e.g. a wireless peripheral's hardware ID) even when the USB
+			// layer has nothing.
+			serial = u.uniq
+		}
 		infos = append(infos, Info{
 			Path:      filepath.Join(b.devPath, e.Name()),
-			VendorID:  vid,
-			ProductID: pid,
+			VendorID:  u.vendorID,
+			ProductID: u.productID,
 			Serial:    serial,
 		})
 	}
@@ -82,7 +94,7 @@ func (b *sysfsBackend) Enumerate(vendorID, productID uint16) ([]Info, error) {
 	return infos, nil
 }
 
-func (b *sysfsBackend) Open(info Info) (Writer, error) {
+func (b *sysfsBackend) Open(info Info) (Handle, error) {
 	f, err := os.OpenFile(info.Path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("hid: open %s: %w", info.Path, err)
@@ -90,40 +102,65 @@ func (b *sysfsBackend) Open(info Info) (Writer, error) {
 	return f, nil
 }
 
-// readIDs parses vendor/product IDs from the HID_ID field of the hidraw
-// device's uevent file. The field has the form "<bus>:<vendor>:<product>",
-// all hex, e.g. "0003:0000046D:0000C900".
-func readIDs(devDir string) (vendorID, productID uint16, err error) {
+// deviceUevent holds the fields this package cares about from a hidraw
+// device's uevent file.
+type deviceUevent struct {
+	vendorID, productID uint16
+	uniq                string // HID_UNIQ; often empty, see readUevent
+}
+
+// readUevent parses vendor/product IDs from the HID_ID field
+// ("<bus>:<vendor>:<product>", all hex, e.g. "0003:0000046D:0000C900") and
+// captures HID_UNIQ, a per-device identifier the HID core sometimes sets
+// from the device's own protocol (used as a serial-number fallback; see
+// sysfsBackend.Enumerate).
+func readUevent(devDir string) (deviceUevent, error) {
 	f, err := os.Open(filepath.Join(devDir, "uevent"))
 	if err != nil {
-		return 0, 0, err
+		return deviceUevent{}, err
 	}
 	defer f.Close()
 
+	var u deviceUevent
+	var haveID bool
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		rest, ok := strings.CutPrefix(line, "HID_ID=")
-		if !ok {
+		if rest, ok := strings.CutPrefix(line, "HID_ID="); ok {
+			parts := strings.Split(rest, ":")
+			if len(parts) == 3 {
+				v, err1 := strconv.ParseUint(parts[1], 16, 32)
+				p, err2 := strconv.ParseUint(parts[2], 16, 32)
+				if err1 == nil && err2 == nil {
+					u.vendorID, u.productID = uint16(v), uint16(p)
+					haveID = true
+				}
+			}
 			continue
 		}
-		parts := strings.Split(rest, ":")
-		if len(parts) != 3 {
-			continue
+		if rest, ok := strings.CutPrefix(line, "HID_UNIQ="); ok {
+			u.uniq = rest
 		}
-		v, err1 := strconv.ParseUint(parts[1], 16, 32)
-		p, err2 := strconv.ParseUint(parts[2], 16, 32)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		return uint16(v), uint16(p), nil
 	}
-	return 0, 0, fmt.Errorf("hid: HID_ID not found under %s", devDir)
+	if !haveID {
+		return deviceUevent{}, fmt.Errorf("hid: HID_ID not found under %s", devDir)
+	}
+	return u, nil
 }
 
-// readSerial walks up the sysfs hierarchy from the HID device directory
-// looking for the owning USB device's "serial" attribute (its
-// iSerialNumber string), the same attribute hidapi reads on Linux.
+// readSerial walks up the sysfs hierarchy from the HID device directory to
+// find the owning USB device's directory (identified by an "idVendor"
+// file, which only a genuine USB device directory has) and reads its
+// "serial" attribute (the iSerialNumber string), the same attribute hidapi
+// reads on Linux.
+//
+// It stops at the first such directory whether or not "serial" exists
+// there: many receivers (e.g. Logitech's Lightspeed/Unifying dongles)
+// simply have no serial descriptor. Climbing past that boundary looking
+// for a hit is wrong, not just unnecessary — parent directories are USB
+// hubs and host controllers, which can have their own unrelated same-named
+// "serial" file (e.g. a PCI bus address), silently producing a bogus,
+// non-unique value instead of a clear "no serial" result.
 func readSerial(devDir string) (string, error) {
 	real, err := filepath.EvalSymlinks(devDir)
 	if err != nil {
@@ -132,11 +169,14 @@ func readSerial(devDir string) (string, error) {
 
 	dir := real
 	for i := 0; i < 8 && dir != "/" && dir != "."; i++ {
-		data, err := os.ReadFile(filepath.Join(dir, "serial"))
-		if err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "idVendor")); err == nil {
+			data, err := os.ReadFile(filepath.Join(dir, "serial"))
+			if err != nil {
+				return "", fmt.Errorf("hid: USB device at %s has no serial attribute", dir)
+			}
 			return strings.TrimSpace(string(data)), nil
 		}
 		dir = filepath.Dir(dir)
 	}
-	return "", fmt.Errorf("hid: no serial attribute found above %s", devDir)
+	return "", fmt.Errorf("hid: no USB device directory (with idVendor) found above %s", devDir)
 }
