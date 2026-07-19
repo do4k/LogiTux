@@ -30,57 +30,57 @@ func buildDashboard(devices []device.Device, onSelect func(index int)) fyne.Canv
 	tiles := make([]fyne.CanvasObject, len(devices))
 	for i, d := range devices {
 		index := i // captured per-iteration (Go 1.22+ loop semantics)
-		tiles[i] = newDeviceTile(d.Info(), func() { onSelect(index) })
+		tiles[i] = newDeviceTile(d, func() { onSelect(index) })
 	}
 	grid := container.NewGridWrap(fyne.NewSize(140, 160), tiles...)
 	return container.NewVScroll(container.NewPadded(grid))
 }
 
-// deviceTile is a small tappable card: an icon, the device's name, and its
-// serial. Fyne's widget.Card isn't itself tappable, so this is a minimal
-// custom widget (BaseWidget + Tapped) wrapping one instead.
+// deviceTile is a small tappable card: an icon, the device's name, its
+// battery level if it has one, and its serial. Fyne's widget.Card isn't
+// itself tappable, so this is a minimal custom widget (BaseWidget +
+// Tapped) wrapping one instead.
 type deviceTile struct {
 	widget.BaseWidget
-	info  device.Info
+	d     device.Device
 	onTap func()
 }
 
-func newDeviceTile(info device.Info, onTap func()) *deviceTile {
-	t := &deviceTile{info: info, onTap: onTap}
+func newDeviceTile(d device.Device, onTap func()) *deviceTile {
+	t := &deviceTile{d: d, onTap: onTap}
 	t.ExtendBaseWidget(t)
 	return t
 }
 
 func (t *deviceTile) CreateRenderer() fyne.WidgetRenderer {
-	icon := canvas.NewImageFromResource(iconForKind(t.info.Kind))
+	info := t.d.Info()
+
+	icon := canvas.NewImageFromResource(iconForKind(info.Kind))
 	icon.FillMode = canvas.ImageFillContain
 	icon.SetMinSize(fyne.NewSize(56, 56))
 
-	name := widget.NewLabel(t.info.Name)
+	name := widget.NewLabel(info.Name)
 	name.Alignment = fyne.TextAlignCenter
 	name.Wrapping = fyne.TextWrapWord
-
-	// Shortened rather than relying on wrapping alone: some serials (e.g.
-	// the receiver-serial-plus-index composite for a mouse behind a
-	// receiver with no USB serial of its own) are long enough that even
-	// wrapped text would crowd a small tile.
-	shortSerial := t.info.Serial
-	if len(shortSerial) > 10 {
-		shortSerial = shortSerial[len(shortSerial)-10:]
-	}
-	serial := widget.NewLabel(fmt.Sprintf("Serial: %s", shortSerial))
-	serial.Alignment = fyne.TextAlignCenter
-	serial.Wrapping = fyne.TextWrapWord
-	serial.TextStyle = fyne.TextStyle{Italic: true}
 
 	bg := canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
 	bg.CornerRadius = theme.Size(theme.SizeNameInputRadius)
 
-	content := container.NewPadded(container.NewVBox(
-		container.NewCenter(icon),
-		name,
-		serial,
-	))
+	tileRows := []fyne.CanvasObject{container.NewCenter(icon), name}
+
+	if bs, ok := t.d.(device.BatteryStatus); ok {
+		if percent, charging, err := bs.Battery(); err == nil {
+			text := fmt.Sprintf("%d%%", percent)
+			if charging {
+				text = "⚡ " + text // a bolt is the universal "charging" signal, not decorative
+			}
+			battery := widget.NewLabel(text)
+			battery.Alignment = fyne.TextAlignCenter
+			tileRows = append(tileRows, battery)
+		}
+	}
+
+	content := container.NewPadded(container.NewVBox(tileRows...))
 	return widget.NewSimpleRenderer(container.NewStack(bg, content))
 }
 

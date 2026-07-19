@@ -38,8 +38,6 @@ const (
 // runtime via hidpp.GetFeatureIndex; see buildMouse.
 const (
 	featureAdjustableDPI    uint16 = 0x2201
-	featureUnifiedBattery   uint16 = 0x1004
-	featureBatteryStatus    uint16 = 0x1000 // legacy fallback; see resolveBatteryFeature
 	featureReportRate       uint16 = 0x8060
 	featureColorLEDEffects  uint16 = 0x8070
 	featureReprogControlsV4 uint16 = 0x1b04
@@ -66,7 +64,7 @@ type Mouse struct {
 	dpiFeatureIndex byte
 
 	batteryFeatureIndex byte
-	batteryKind         batteryKind
+	batteryKind         hidpp.BatteryKind
 
 	reportRateFeatureIndex byte
 	reportRateOptions      []int // Hz, fastest (highest Hz) first
@@ -261,9 +259,9 @@ func buildMouse(conn *hidpp.Conn, deviceIndex byte, serial string) (*Mouse, erro
 	if err != nil {
 		return nil, err
 	}
-	batteryIdx, battKind, err := resolveBatteryFeature(conn, deviceIndex)
+	batteryIdx, battKind, err := hidpp.ResolveBatteryFeature(conn, deviceIndex)
 	if err != nil {
-		batteryIdx, battKind = 0, batteryKindNone
+		batteryIdx, battKind = 0, hidpp.BatteryKindNone
 	}
 	reportRateIdx, err := requireFeature(conn, deviceIndex, featureReportRate, "Report Rate")
 	if err != nil {

@@ -30,6 +30,9 @@ type DeviceState struct {
 	// code (see internal/uinput.Targets) it's remapped to. Absent entries
 	// mean "default (unremapped)".
 	ButtonRemaps map[uint16]uint16 `json:"button_remaps,omitempty"`
+
+	Sidetone        int   `json:"sidetone,omitempty"`
+	EqualizerLevels []int `json:"equalizer_levels,omitempty"` // one dB value per band, in device.EqualizerControl's band order
 }
 
 // Store is a JSON-backed, serial-number-keyed table of DeviceState,

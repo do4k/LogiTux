@@ -23,12 +23,21 @@ v1 supports:
   against doesn't expose either, evidently handling them through the
   receiver's own protocol layer instead, so both are implemented as
   optional and degrade gracefully rather than being guaranteed).
+- **PRO X Wireless Gaming Headset** — battery, sidetone, and a full
+  per-band equalizer (band count/frequencies/dB range are read from the
+  device, not assumed).
 
 A **Dashboard** tab shows every connected device as a clickable tile
-(icon, name, serial); clicking one jumps to its own tab with full
-controls. Device tabs only exist while that device is actually connected.
-A system tray icon offers quick per-device actions (power, DPI presets)
-without opening the window.
+(icon, name, battery level if it has one — a bolt marks charging);
+clicking one jumps to its own tab with full controls. Device tabs only
+exist while that device is actually connected. Each tab keeps the one or
+two settings you're likely to adjust often (power, brightness/DPI,
+battery) directly visible, with everything else — color temperature,
+report rate, RGB, button remapping, sidetone, the equalizer — tucked under
+a collapsed "Advanced" section, which stays expanded or collapsed across
+LogiTux's periodic re-polling rather than snapping shut on you. A system
+tray icon offers quick per-device actions (power, DPI presets) without
+opening the window.
 
 The device layer is a plugin architecture (see [Architecture](#architecture)
 below), so support for further Logitech hardware — other mice, keyboards,
@@ -108,27 +117,29 @@ restores normal clicking.
 ## Architecture
 
 ```
-cmd/logitux/             GUI entry point (Fyne): window, tabs, systray, widgets
+cmd/logitux/             GUI entry point (Fyne): window, tabs, dashboard, systray, widgets
 internal/hid/            Pure-Go hidraw backend: enumerate + open /dev/hidrawN
-internal/hidpp/          HID++ 2.0 transport: feature calls, notifications
+internal/hidpp/          HID++ 2.0 transport: feature calls, notifications, shared battery logic
 internal/uinput/         Virtual input device, for button remapping
 internal/device/         Plugin registry and capability interfaces
 internal/device/litra/   Litra Glow/Beam plugin (simple vendor HID protocol)
 internal/device/gpro/    G Pro Wireless plugin (HID++ 2.0 protocol)
+internal/device/prox/    PRO X Wireless Gaming Headset plugin (HID++ 2.0 protocol)
 internal/config/         JSON-backed last-known-state store
 install/                 udev rules and .desktop launcher entry
 ```
 
 Device support is added as a plugin: a package registers the vendor/product
 IDs it handles with `internal/device.Register` in an `init()` function (see
-`internal/device/litra/litra.go` or `internal/device/gpro/gpro.go`), and
-implements whichever capability interfaces the hardware supports
-(`PowerControl`, `DPIControl`, `ButtonRemapControl`, ...). The GUI never
-references a specific product — it type-asserts each discovered
-`device.Device` against the capability interfaces and renders whatever
-controls apply. Adding a new device means writing a new plugin package and
-importing it (for its `init()` side effect) from `cmd/logitux/main.go`; no
-other files need to change.
+`internal/device/litra/litra.go`, `internal/device/gpro/gpro.go`, or
+`internal/device/prox/prox.go`), and implements whichever capability
+interfaces the hardware supports (`PowerControl`, `DPIControl`,
+`ButtonRemapControl`, `EqualizerControl`, ...). The GUI never references a
+specific product — it type-asserts each discovered `device.Device` against
+the capability interfaces and renders whatever controls apply. Adding a new
+device means writing a new plugin package and importing it (for its
+`init()` side effect) from `cmd/logitux/main.go`; no other files need to
+change.
 
 Most Logitech peripherals beyond simple lights (mice, keyboards, headsets)
 speak Logitech's **HID++ 2.0** protocol: a request/response feature-call
@@ -137,8 +148,12 @@ implements that transport (feature discovery via the Root feature,
 request/response matching, unsolicited notifications), so a new HID++
 device plugin only needs to know which feature IDs it uses and their byte
 layouts — see `internal/device/gpro` for a worked example covering DPI,
-battery (with a four-tier fallback across the feature IDs different mice
-actually implement), report rate, RGB, and button remapping.
+report rate, RGB, and button remapping, and `internal/device/prox` for a
+per-band equalizer. Battery support (a four-tier feature-ID fallback, since
+different units implement different ones — verified the hard way, against
+real hardware that needed each of the fallback tiers) lives once in
+`internal/hidpp/battery.go` and both device plugins just call into it,
+rather than each having its own copy.
 
 ## Development
 

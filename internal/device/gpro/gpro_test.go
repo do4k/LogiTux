@@ -109,16 +109,16 @@ type fakeMouse struct {
 func newFakeMouse() *fakeMouse {
 	return &fakeMouse{
 		features: map[uint16]byte{
-			featureAdjustableDPI:    0x01,
-			featureUnifiedBattery:   0x02,
-			featureReportRate:       0x03,
-			featureColorLEDEffects:  0x04,
-			featureReprogControlsV4: 0x05,
+			featureAdjustableDPI:        0x01,
+			hidpp.FeatureUnifiedBattery: 0x02,
+			featureReportRate:           0x03,
+			featureColorLEDEffects:      0x04,
+			featureReprogControlsV4:     0x05,
 		},
 		dpi:               800,
 		dpiDefault:        800,
 		batteryPercent:    72,
-		batteryStatus:     batteryStatusDischarging,
+		batteryStatus:     hidpp.BatteryStatusDischarging,
 		reportRateBitmask: 0b10000001, // 1ms (1000Hz) and 8ms (125Hz)
 		reportRateMs:      1,
 		// 0x53 = Back Button (divertable), 0x50 = Left Button (not
@@ -137,8 +137,8 @@ func newFakeMouse() *fakeMouse {
 // hardware.
 func newFakeMouseWithLegacyBattery() *fakeMouse {
 	fm := newFakeMouse()
-	delete(fm.features, featureUnifiedBattery)
-	fm.features[featureBatteryStatus] = 0x02
+	delete(fm.features, hidpp.FeatureUnifiedBattery)
+	fm.features[hidpp.FeatureBatteryStatus] = 0x02
 	return fm
 }
 
@@ -146,8 +146,8 @@ func newFakeMouseWithLegacyBattery() *fakeMouse {
 // battery feature, only BATTERY_VOLTAGE (0x1001).
 func newFakeMouseWithVoltageBattery() *fakeMouse {
 	fm := newFakeMouse()
-	delete(fm.features, featureUnifiedBattery)
-	fm.features[featureBatteryVoltage] = 0x02
+	delete(fm.features, hidpp.FeatureUnifiedBattery)
+	fm.features[hidpp.FeatureBatteryVoltage] = 0x02
 	fm.batteryMillivolts = 3922 // ~70% per the discharge curve
 	return fm
 }
@@ -156,8 +156,8 @@ func newFakeMouseWithVoltageBattery() *fakeMouse {
 // (0x1F20).
 func newFakeMouseWithADCBattery() *fakeMouse {
 	fm := newFakeMouse()
-	delete(fm.features, featureUnifiedBattery)
-	fm.features[featureADCMeasurement] = 0x02
+	delete(fm.features, hidpp.FeatureUnifiedBattery)
+	fm.features[hidpp.FeatureADCMeasurement] = 0x02
 	fm.batteryMillivolts = 3922
 	fm.batteryVoltFlags = 0x01 // valid reading, discharging
 	return fm
@@ -198,9 +198,9 @@ func (fm *fakeMouse) respond(req []byte) []byte {
 			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
 		}
 
-	case fm.features[featureUnifiedBattery]:
+	case fm.features[hidpp.FeatureUnifiedBattery]:
 		switch function {
-		case batteryFuncGetStatusUnified & 0xf0:
+		case hidpp.BatteryFuncGetStatusUnified & 0xf0:
 			resp[4] = byte(fm.batteryPercent)
 			resp[5] = 0x00
 			resp[6] = fm.batteryStatus
@@ -208,9 +208,9 @@ func (fm *fakeMouse) respond(req []byte) []byte {
 			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
 		}
 
-	case fm.features[featureBatteryStatus]:
+	case fm.features[hidpp.FeatureBatteryStatus]:
 		switch function {
-		case batteryFuncGetStatusLegacy & 0xf0:
+		case hidpp.BatteryFuncGetStatusLegacy & 0xf0:
 			resp[4] = byte(fm.batteryPercent)
 			resp[5] = 0x00 // next threshold, unused by our code
 			resp[6] = fm.batteryStatus
@@ -218,18 +218,18 @@ func (fm *fakeMouse) respond(req []byte) []byte {
 			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
 		}
 
-	case fm.features[featureBatteryVoltage]:
+	case fm.features[hidpp.FeatureBatteryVoltage]:
 		switch function {
-		case batteryFuncGetVoltage & 0xf0:
+		case hidpp.BatteryFuncGetVoltage & 0xf0:
 			binary.BigEndian.PutUint16(resp[4:6], uint16(fm.batteryMillivolts))
 			resp[6] = fm.batteryVoltFlags
 		default:
 			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
 		}
 
-	case fm.features[featureADCMeasurement]:
+	case fm.features[hidpp.FeatureADCMeasurement]:
 		switch function {
-		case batteryFuncGetADC & 0xf0:
+		case hidpp.BatteryFuncGetADC & 0xf0:
 			binary.BigEndian.PutUint16(resp[4:6], uint16(fm.batteryMillivolts))
 			resp[6] = fm.batteryVoltFlags
 		default:
@@ -373,7 +373,7 @@ func TestBuildMouseFailsWhenARequiredFeatureIsMissing(t *testing.T) {
 // should report an error.
 func TestBuildMouseToleratesMissingBattery(t *testing.T) {
 	fm := newFakeMouse()
-	delete(fm.features, featureUnifiedBattery) // and no featureBatteryStatus either
+	delete(fm.features, hidpp.FeatureUnifiedBattery) // and no hidpp.FeatureBatteryStatus either
 
 	m, _, _ := newTestMouseFrom(t, fm)
 	defer m.Close()

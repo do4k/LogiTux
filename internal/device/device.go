@@ -23,8 +23,9 @@ import (
 type Kind string
 
 const (
-	KindLight Kind = "light"
-	KindMouse Kind = "mouse"
+	KindLight   Kind = "light"
+	KindMouse   Kind = "mouse"
+	KindHeadset Kind = "headset"
 )
 
 // Info identifies a discovered device for display purposes.
@@ -110,6 +111,30 @@ type ButtonInfo struct {
 type ButtonRemapControl interface {
 	Buttons() ([]ButtonInfo, error)
 	RemapButton(buttonID uint16, target uint16) error
+}
+
+// SidetoneControl is implemented by headsets with adjustable sidetone
+// (how much of the mic is played back into the headset's own speakers),
+// expressed as a percentage from 0 to 100.
+type SidetoneControl interface {
+	SetSidetone(percent int) error
+	Sidetone() (int, error)
+}
+
+// EqualizerBand describes one fixed band of a device's equalizer.
+type EqualizerBand struct {
+	FrequencyHz int
+}
+
+// EqualizerControl is implemented by devices with a hardware equalizer.
+// The band layout (count and frequencies) and dB range are fixed
+// properties of the hardware, discovered at connect time; SetLevels takes
+// one dB value per band, in the same order as Bands, clamped to Range.
+type EqualizerControl interface {
+	EqualizerBands() []EqualizerBand
+	EqualizerRange() (min, max int) // dB
+	EqualizerLevels() ([]int, error)
+	SetEqualizerLevels(levelsDB []int) error
 }
 
 // OpenFunc opens a specific discovered hidraw device as a Device. Some

@@ -20,6 +20,7 @@ import (
 	// further device plugins the same way to extend LogiTux.
 	_ "logitux/internal/device/gpro"
 	_ "logitux/internal/device/litra"
+	_ "logitux/internal/device/prox"
 	"logitux/internal/hid"
 )
 
@@ -48,6 +49,13 @@ type appState struct {
 	// from the main/UI goroutine — inside fyne.Do in refresh, or from a
 	// widget callback — so it needs no lock, unlike current above.
 	selectedTab string
+
+	// advancedOpen remembers, per device serial, whether that device
+	// card's "Advanced" section is expanded. Device cards are rebuilt
+	// from scratch on every refresh tick, which would otherwise silently
+	// re-collapse an open section out from under the user; same
+	// no-lock-needed reasoning as selectedTab.
+	advancedOpen map[string]bool
 }
 
 func main() {
@@ -75,11 +83,12 @@ func main() {
 	window.Resize(fyne.NewSize(420, 480))
 
 	state := &appState{
-		fyneApp: a,
-		window:  window,
-		backend: hid.Default,
-		store:   store,
-		current: make(map[string]device.Device),
+		fyneApp:      a,
+		window:       window,
+		backend:      hid.Default,
+		store:        store,
+		current:      make(map[string]device.Device),
+		advancedOpen: make(map[string]bool),
 	}
 
 	setUpSystemTray(state)

@@ -14,9 +14,13 @@ var mouseIconSVG []byte
 //go:embed assets/light.svg
 var lightIconSVG []byte
 
+//go:embed assets/headset.svg
+var headsetIconSVG []byte
+
 var (
 	mouseIcon   = fyne.NewStaticResource("mouse.svg", mouseIconSVG)
 	lightIcon   = fyne.NewStaticResource("light.svg", lightIconSVG)
+	headsetIcon = fyne.NewStaticResource("headset.svg", headsetIconSVG)
 	genericIcon = mouseIcon // fallback for any future device.Kind without dedicated art
 )
 
@@ -29,6 +33,8 @@ func iconForKind(k device.Kind) fyne.Resource {
 		return lightIcon
 	case device.KindMouse:
 		return mouseIcon
+	case device.KindHeadset:
+		return headsetIcon
 	default:
 		return genericIcon
 	}

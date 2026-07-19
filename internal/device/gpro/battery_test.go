@@ -1,12 +1,16 @@
 package gpro
 
-import "testing"
+import (
+	"testing"
+
+	"logitux/internal/hidpp"
+)
 
 func TestBatteryReportsPercentAndDischargingState(t *testing.T) {
 	m, fm, _ := newTestMouse(t)
 	defer m.Close()
 	fm.batteryPercent = 55
-	fm.batteryStatus = batteryStatusDischarging
+	fm.batteryStatus = hidpp.BatteryStatusDischarging
 
 	percent, charging, err := m.Battery()
 	if err != nil {
@@ -21,7 +25,7 @@ func TestBatteryReportsChargingStates(t *testing.T) {
 	m, fm, _ := newTestMouse(t)
 	defer m.Close()
 
-	chargingStates := []byte{batteryStatusRecharging, batteryStatusAlmostFull, batteryStatusFull, batteryStatusSlowRecharge}
+	chargingStates := []byte{hidpp.BatteryStatusRecharging, hidpp.BatteryStatusAlmostFull, hidpp.BatteryStatusFull, hidpp.BatteryStatusSlowRecharge}
 	for _, status := range chargingStates {
 		fm.batteryStatus = status
 		_, charging, err := m.Battery()
@@ -41,7 +45,7 @@ func TestBatteryFallsBackToLegacyFeature(t *testing.T) {
 	m, fm, _ := newTestMouseFrom(t, newFakeMouseWithLegacyBattery())
 	defer m.Close()
 	fm.batteryPercent = 40
-	fm.batteryStatus = batteryStatusDischarging
+	fm.batteryStatus = hidpp.BatteryStatusDischarging
 
 	percent, charging, err := m.Battery()
 	if err != nil {
@@ -140,8 +144,8 @@ func TestEstimateBatteryPercentClampsAndInterpolates(t *testing.T) {
 		{3946, 74}, // interpolated between 3922(70%) and 3989(80%)
 	}
 	for _, c := range cases {
-		if got := estimateBatteryPercent(c.mv); got != c.want {
-			t.Errorf("estimateBatteryPercent(%d) = %d, want %d", c.mv, got, c.want)
+		if got := hidpp.EstimateBatteryPercent(c.mv); got != c.want {
+			t.Errorf("hidpp.EstimateBatteryPercent(%d) = %d, want %d", c.mv, got, c.want)
 		}
 	}
 }
