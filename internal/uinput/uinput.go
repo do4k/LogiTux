@@ -24,7 +24,7 @@ const (
 	synReport = 0
 
 	uinputMaxNameSize = 80
-	absCnt             = 64
+	absCnt            = 64
 
 	uinputIoctlBase = 0x55 // 'U', per linux/uinput.h
 )
@@ -49,8 +49,8 @@ func iocEncode(dir, typ, nr, size uint) uint {
 	return (dir << iocDirShift) | (typ << iocTypeShift) | (nr << iocNRShift) | (size << iocSizeShift)
 }
 
-func ioNoArg(typ, nr uint) uint     { return iocEncode(0, typ, nr, 0) }
-func iowInt(typ, nr uint) uint      { return iocEncode(iocWrite, typ, nr, 4) } // sizeof(int) on this platform
+func ioNoArg(typ, nr uint) uint { return iocEncode(0, typ, nr, 0) }
+func iowInt(typ, nr uint) uint  { return iocEncode(iocWrite, typ, nr, 4) } // sizeof(int) on this platform
 
 var (
 	uiDevCreate  = ioNoArg(uinputIoctlBase, 1)

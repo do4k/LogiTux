@@ -53,19 +53,33 @@ func buildDeviceList(a *appState, devices []device.Device) fyne.CanvasObject {
 		labels[i] = name
 	}
 
-	tabs := container.NewAppTabs()
-	selectIndex := 0
+	deviceItems := make([]*container.TabItem, len(devices))
 	for i, d := range devices {
-		tabs.Append(container.NewTabItem(labels[i], container.NewVScroll(buildDeviceCard(a, d))))
-		if labels[i] == a.selectedTab {
-			selectIndex = i
-		}
+		deviceItems[i] = container.NewTabItem(labels[i], container.NewVScroll(buildDeviceCard(a, d)))
+	}
+
+	tabs := container.NewAppTabs()
+	dashboardItem := container.NewTabItem("Dashboard", buildDashboard(devices, func(index int) {
+		tabs.Select(deviceItems[index])
+	}))
+	tabs.Append(dashboardItem)
+	for _, item := range deviceItems {
+		tabs.Append(item)
 	}
 	tabs.OnSelected = func(item *container.TabItem) {
 		a.selectedTab = item.Text
 	}
-	tabs.SelectIndex(selectIndex)
-	a.selectedTab = labels[selectIndex]
+
+	// Restore whichever tab was selected before this rebuild (a fresh
+	// start, with no prior selection, lands on the Dashboard).
+	selectItem := dashboardItem
+	for i, l := range labels {
+		if l == a.selectedTab {
+			selectItem = deviceItems[i]
+		}
+	}
+	tabs.Select(selectItem)
+	a.selectedTab = selectItem.Text
 
 	return tabs
 }

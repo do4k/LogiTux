@@ -7,6 +7,7 @@ LogiTux talks to hardware directly over Linux's `hidraw` interface (no
 `libhidapi` dependency, no cgo for device I/O), so installation only needs
 a Go toolchain and Fyne's usual GUI build dependencies.
 
+![LogiTux's Dashboard tab: one tile per connected device, with an original icon (not vendor artwork — see Credit) for each device kind](images/screenshot-dashboard.png)
 ![LogiTux showing a connected G Pro Wireless: DPI, report rate, battery, and logo color](images/screenshot-mouse.png)
 
 ## Status
@@ -23,9 +24,11 @@ v1 supports:
   receiver's own protocol layer instead, so both are implemented as
   optional and degrade gracefully rather than being guaranteed).
 
-Each connected device gets its own tab, which only appears while that
-device is actually connected. A system tray icon offers quick per-device
-actions (power, DPI presets) without opening the window.
+A **Dashboard** tab shows every connected device as a clickable tile
+(icon, name, serial); clicking one jumps to its own tab with full
+controls. Device tabs only exist while that device is actually connected.
+A system tray icon offers quick per-device actions (power, DPI presets)
+without opening the window.
 
 The device layer is a plugin architecture (see [Architecture](#architecture)
 below), so support for further Logitech hardware — other mice, keyboards,

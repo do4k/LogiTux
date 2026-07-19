@@ -17,9 +17,20 @@ import (
 	"logitux/internal/hid"
 )
 
+// Kind categorizes a device for display purposes (e.g. choosing a
+// dashboard icon). Freeform and cosmetic only — nothing in this package
+// branches on it.
+type Kind string
+
+const (
+	KindLight Kind = "light"
+	KindMouse Kind = "mouse"
+)
+
 // Info identifies a discovered device for display purposes.
 type Info struct {
 	Name      string // human-readable product name, e.g. "Litra Glow"
+	Kind      Kind
 	Serial    string
 	VendorID  uint16
 	ProductID uint16

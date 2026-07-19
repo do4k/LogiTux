@@ -301,6 +301,7 @@ func buildMouse(conn *hidpp.Conn, deviceIndex byte, serial string) (*Mouse, erro
 		deviceIndex: deviceIndex,
 		info: device.Info{
 			Name:      "G Pro Wireless",
+			Kind:      device.KindMouse,
 			Serial:    serial,
 			VendorID:  vendorID,
 			ProductID: productWired,

@@ -66,6 +66,7 @@ func open(backend hid.Backend, info hid.Info) (device.Device, error) {
 		conn: w,
 		info: device.Info{
 			Name:      name,
+			Kind:      device.KindLight,
 			Serial:    info.Serial,
 			VendorID:  info.VendorID,
 			ProductID: info.ProductID,
