@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 230">
+  <defs>
+    <linearGradient id="cup" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#34343a"/>
+      <stop offset="0.5" stop-color="#26262b"/>
+      <stop offset="1" stop-color="#1c1c20"/>
+    </linearGradient>
+    <linearGradient id="cupR" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="#34343a"/>
+      <stop offset="0.5" stop-color="#26262b"/>
+      <stop offset="1" stop-color="#1c1c20"/>
+    </linearGradient>
+  </defs>
+
+  <!-- headband -->
+  <path d="M48,102 C48,32 152,32 152,102" fill="none" stroke="#2b2b30" stroke-width="16" stroke-linecap="round"/>
+  <path d="M58,100 C58,44 142,44 142,100" fill="none" stroke="#17171a" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- yokes (steel forks) -->
+  <rect x="42" y="94" width="8" height="26" rx="3" fill="#54545c"/>
+  <rect x="150" y="94" width="8" height="26" rx="3" fill="#54545c"/>
+
+  <!-- ear cups -->
+  <rect x="28" y="106" width="42" height="66" rx="19" fill="url(#cup)" stroke="#45454c" stroke-width="1.5"/>
+  <rect x="130" y="106" width="42" height="66" rx="19" fill="url(#cupR)" stroke="#45454c" stroke-width="1.5"/>
+  <ellipse cx="49" cy="139" rx="12" ry="22" fill="#1a1a1e"/>
+  <ellipse cx="151" cy="139" rx="12" ry="22" fill="#1a1a1e"/>
+
+  <!-- boom mic -->
+  <path d="M44,172 C36,192 46,206 72,210" fill="none" stroke="#26262b" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="76" cy="210" r="9" fill="#1c1c20" stroke="#3a3a40" stroke-width="1.5"/>
+</svg>

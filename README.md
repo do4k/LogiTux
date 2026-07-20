@@ -7,8 +7,10 @@ LogiTux talks to hardware directly over Linux's `hidraw` interface (no
 `libhidapi` dependency, no cgo for device I/O), so installation only needs
 a Go toolchain and Fyne's usual GUI build dependencies.
 
-![LogiTux's Dashboard tab: one tile per connected device, with an original icon (not vendor artwork — see Credit) for each device kind](images/screenshot-dashboard.png)
-![LogiTux showing a connected G Pro Wireless: DPI, report rate, battery, and logo color](images/screenshot-mouse.png)
+![LogiTux's Dashboard, styled after Logitech G HUB: one dark card per connected device with a product render (original artwork, not Logitech's — see Credit), battery level, and a settings button](images/screenshot-dashboard.png)
+![LogiTux's device page for a G Pro Wireless: product render and name in the header, then DPI and battery controls](images/screenshot-mouse.png)
+![LogiTux's Litra Glow page: a power pill, temperature and brightness gradient sliders, and a render whose halo follows the light's state](images/screenshot-litra.png)
+![LogiTux's C922 page: zoom slider, pan/tilt position pad, and autofocus/auto-exposure pills with their manual sliders](images/screenshot-webcam.png)
 
 ## Status
 
@@ -26,16 +28,35 @@ v1 supports:
 - **PRO X Wireless Gaming Headset** — battery, sidetone, and a full
   per-band equalizer (band count/frequencies/dB range are read from the
   device, not assumed).
+- **C920 / C920 HD Pro / C922 Pro Stream / C930e** webcams — zoom,
+  pan/tilt position, autofocus and manual focus, auto and manual
+  exposure, and image tuning (brightness, contrast, saturation,
+  sharpness). Webcams aren't HID devices, so these go through a small
+  pure-Go V4L2 layer rather than hidraw; which controls exist is queried
+  from the driver per device, not assumed. Controls only — no video
+  preview yet. **Caveat:** implemented against the documented V4L2 UVC
+  control API with unit-tested ioctl marshaling, but not yet verified
+  against physical hardware, unlike everything above.
 
-A **Dashboard** tab shows every connected device as a clickable tile
-(icon, name, battery level if it has one — a bolt marks charging);
-clicking one jumps to its own tab with full controls. Device tabs only
-exist while that device is actually connected. Each tab keeps the one or
-two settings you're likely to adjust often (power, brightness/DPI,
-battery) directly visible, with everything else — color temperature,
-report rate, RGB, button remapping, sidetone, the equalizer — tucked under
-a collapsed "Advanced" section, which stays expanded or collapsed across
-LogiTux's periodic re-polling rather than snapping shut on you. A system
+The UI is styled after Logitech's own G HUB, navigation included: the
+**Dashboard** — a near-black home screen with a cyan-blue accent — shows
+every connected device as a clickable card (product render, name,
+battery level if it has one — a bolt marks charging, and a settings
+button); clicking one opens that device's page with its full controls,
+and the back arrow in the page's top-left returns to the Dashboard. A
+device's page only exists while it's actually connected — unplugging
+drops you back on the Dashboard. Device pages are laid out like G HUB's:
+an icon rail on the left groups the device's settings into sections —
+Sensitivity (DPI, report rate), Assignments (button remapping), Lighting
+(power, brightness, color temperature, RGB logo color), and Sound
+(sidetone, equalizer) — and only the sections a device actually supports
+appear. The panel beside the rail holds the selected section's controls,
+and the rest of the page shows the battery level and a large product
+render. On a light's page, the render actually glows, like G HUB's Litra
+page: a halo behind it follows the power pill and the temperature and
+brightness gradient sliders live. The selected section sticks across
+LogiTux's periodic re-polling
+rather than snapping back to the first every few seconds. A system
 tray icon offers quick per-device actions (power, DPI presets) without
 opening the window.
 
@@ -74,9 +95,10 @@ To remove everything `install.sh` set up, run `./uninstall.sh`.
 ## Usage
 
 LogiTux polls for supported devices every few seconds. Each connected
-device gets its own tab (tabs disappear when a device is unplugged), with
-whichever controls it supports — a power checkbox, sliders, dropdowns, a
-color picker. Changes are applied immediately.
+device gets its own page, opened from its Dashboard card (and gone once
+the device unplugs), with whichever controls it supports — a power
+checkbox, sliders, dropdowns, a color picker. Changes are applied
+immediately.
 
 Closing the window minimizes LogiTux to the system tray rather than
 quitting; use the tray menu's "Quit" item to actually exit. The tray also
@@ -93,6 +115,20 @@ light that's currently off, for example. Button remaps are the one
 exception (see below): they're re-applied automatically whenever a mouse
 reconnects, since a remap that silently stopped working every time the app
 restarted would defeat the point of the feature.
+
+### Custom product images
+
+Each supported product ships with an original render drawn for LogiTux
+(Logitech's own product photography is copyrighted, so an MIT-licensed
+project can't redistribute it). If you'd rather see the official images,
+you can supply your own: drop a file into
+`$XDG_CONFIG_HOME/logitux/images/` (typically `~/.config/logitux/images/`)
+named after the product — lowercased, spaces as dashes — with a `.png`,
+`.jpg`, `.jpeg`, or `.svg` extension, e.g. `g-pro-wireless.png`,
+`litra-glow.png`, or `pro-x-wireless-gaming-headset.png`. LogiTux picks
+these up at startup and uses them everywhere the built-in render would
+appear. Such images are for your own local use; don't commit them to a
+public fork.
 
 ### Button remapping
 
@@ -117,7 +153,7 @@ restores normal clicking.
 ## Architecture
 
 ```
-cmd/logitux/             GUI entry point (Fyne): window, tabs, dashboard, systray, widgets
+cmd/logitux/             GUI entry point (Fyne): window, dashboard, device pages, systray
 internal/hid/            Pure-Go hidraw backend: enumerate + open /dev/hidrawN
 internal/hidpp/          HID++ 2.0 transport: feature calls, notifications, shared battery logic
 internal/uinput/         Virtual input device, for button remapping
@@ -125,6 +161,8 @@ internal/device/         Plugin registry and capability interfaces
 internal/device/litra/   Litra Glow/Beam plugin (simple vendor HID protocol)
 internal/device/gpro/    G Pro Wireless plugin (HID++ 2.0 protocol)
 internal/device/prox/    PRO X Wireless Gaming Headset plugin (HID++ 2.0 protocol)
+internal/device/webcam/  C920/C922/C930e webcam plugin (V4L2 controls, not HID)
+internal/v4l2/           Pure-Go V4L2 control ioctls: query/get/set on /dev/videoN
 internal/config/         JSON-backed last-known-state store
 install/                 udev rules and .desktop launcher entry
 ```
@@ -139,7 +177,10 @@ specific product — it type-asserts each discovered `device.Device` against
 the capability interfaces and renders whatever controls apply. Adding a new
 device means writing a new plugin package and importing it (for its
 `init()` side effect) from `cmd/logitux/main.go`; no other files need to
-change.
+change. Hardware that doesn't live behind hidraw at all can instead
+register a whole discovery function with `device.RegisterDiscoverer` —
+that's how the webcam plugin scans `/sys/class/video4linux` for V4L2
+devices while everything else goes through the hidraw backend.
 
 Most Logitech peripherals beyond simple lights (mice, keyboards, headsets)
 speak Logitech's **HID++ 2.0** protocol: a request/response feature-call
@@ -164,6 +205,11 @@ make run     # build and run
 ```
 
 ## Credit
+
+All product artwork in LogiTux (the dashboard renders and generic device
+icons) is original, drawn for this project; none of it is Logitech's
+imagery. "Logitech", "G HUB", and the product names are Logitech
+trademarks, used here only to identify the hardware being controlled.
 
 The Litra USB protocol was originally reverse-engineered by
 [kharyam/go-litra-driver](https://github.com/kharyam/go-litra-driver) (and

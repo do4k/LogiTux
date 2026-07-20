@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 200">
+  <defs>
+    <linearGradient id="beamglow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdf7e6"/>
+      <stop offset="1" stop-color="#e9d9b2"/>
+    </linearGradient>
+    <linearGradient id="beamshell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34343a"/>
+      <stop offset="1" stop-color="#232327"/>
+    </linearGradient>
+  </defs>
+
+  <!-- desk base -->
+  <ellipse cx="110" cy="158" rx="48" ry="10" fill="#1d1d21" stroke="#3a3a40" stroke-width="1.5"/>
+  <!-- stand post -->
+  <rect x="104" y="86" width="12" height="70" rx="5" fill="url(#beamshell)" stroke="#3a3a40" stroke-width="1.5"/>
+
+  <!-- light bar -->
+  <rect x="18" y="42" width="184" height="40" rx="12" fill="url(#beamshell)" stroke="#45454c" stroke-width="1.5"/>
+  <rect x="26" y="49" width="168" height="26" rx="8" fill="url(#beamglow)"/>
+</svg>

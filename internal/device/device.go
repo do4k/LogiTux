@@ -26,6 +26,7 @@ const (
 	KindLight   Kind = "light"
 	KindMouse   Kind = "mouse"
 	KindHeadset Kind = "headset"
+	KindWebcam  Kind = "webcam"
 )
 
 // Info identifies a discovered device for display purposes.
@@ -137,6 +138,26 @@ type EqualizerControl interface {
 	SetEqualizerLevels(levelsDB []int) error
 }
 
+// CameraControl describes one adjustable camera control, discovered
+// from the hardware at open time (the set varies by model and even
+// firmware). Name is a stable identifier the GUI recognizes for special
+// treatment — e.g. "Zoom", "Pan", "Tilt", "Auto Focus" — mirroring how
+// EqualizerControl reports its band layout rather than assuming one.
+// Boolean controls (e.g. "Auto Focus") have Min 0 and Max 1.
+type CameraControl struct {
+	Name                    string
+	Min, Max, Step, Default int
+}
+
+// CameraControlSet is implemented by camera devices (webcams). Values
+// are read from and written to the hardware live; there is no cached
+// state to get stale.
+type CameraControlSet interface {
+	CameraControls() []CameraControl
+	CameraControl(name string) (int, error)
+	SetCameraControl(name string, value int) error
+}
+
 // OpenFunc opens a specific discovered hidraw device as a Device. Some
 // physical devices expose more than one hidraw node for the same product
 // (e.g. a wireless receiver has one hidraw interface per USB interface);
@@ -157,6 +178,19 @@ var plugins []plugin
 // from a plugin package's init() function.
 func Register(vendorID uint16, productIDs []uint16, open OpenFunc) {
 	plugins = append(plugins, plugin{vendorID: vendorID, productIDs: productIDs, open: open})
+}
+
+// Discoverer finds devices that don't live behind the hidraw backend at
+// all — e.g. webcams, which are V4L2 devices. Registered via
+// RegisterDiscoverer from a plugin package's init(), and run on every
+// Discover alongside the hidraw plugins.
+type Discoverer func() ([]Device, []error)
+
+var discoverers []Discoverer
+
+// RegisterDiscoverer adds a non-hidraw device discoverer to the registry.
+func RegisterDiscoverer(fn Discoverer) {
+	discoverers = append(discoverers, fn)
 }
 
 // Discover enumerates hidraw devices via backend and opens every one that
@@ -186,6 +220,12 @@ func Discover(backend hid.Backend) ([]Device, []error) {
 				devices = append(devices, d)
 			}
 		}
+	}
+
+	for _, discover := range discoverers {
+		found, ferrs := discover()
+		devices = append(devices, found...)
+		errs = append(errs, ferrs...)
 	}
 
 	sort.Slice(devices, func(i, j int) bool {

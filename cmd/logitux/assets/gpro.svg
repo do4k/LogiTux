@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 230">
+  <defs>
+    <radialGradient id="body" cx="0.5" cy="0.35" r="0.9">
+      <stop offset="0" stop-color="#3a3a40"/>
+      <stop offset="0.6" stop-color="#2a2a2f"/>
+      <stop offset="1" stop-color="#1c1c20"/>
+    </radialGradient>
+    <linearGradient id="wheel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#26262b"/>
+      <stop offset="0.5" stop-color="#3c3c42"/>
+      <stop offset="1" stop-color="#26262b"/>
+    </linearGradient>
+  </defs>
+
+  <!-- side buttons, peeking out from the left edge -->
+  <rect x="32" y="88" width="14" height="26" rx="5" fill="#37373d"/>
+  <rect x="33" y="120" width="14" height="24" rx="5" fill="#37373d"/>
+
+  <!-- body (top-down) -->
+  <path d="M100,12 C140,12 158,44 160,88 C162,134 150,182 133,200
+           C121,212 79,212 67,200 C50,182 38,134 40,88 C42,44 60,12 100,12 Z"
+        fill="url(#body)" stroke="#45454c" stroke-width="1.5"/>
+
+  <!-- button seam + creases -->
+  <line x1="100" y1="13" x2="100" y2="92" stroke="#131316" stroke-width="2.5"/>
+  <path d="M42,80 C58,66 76,60 91,59" fill="none" stroke="#131316" stroke-width="2"/>
+  <path d="M158,80 C142,66 124,60 109,59" fill="none" stroke="#131316" stroke-width="2"/>
+
+  <!-- scroll wheel -->
+  <rect x="90" y="52" width="20" height="40" rx="10" fill="#131316"/>
+  <rect x="94" y="56" width="12" height="32" rx="6" fill="url(#wheel)"/>
+  <line x1="95" y1="64" x2="105" y2="64" stroke="#1a1a1e" stroke-width="2"/>
+  <line x1="95" y1="72" x2="105" y2="72" stroke="#1a1a1e" stroke-width="2"/>
+  <line x1="95" y1="80" x2="105" y2="80" stroke="#1a1a1e" stroke-width="2"/>
+
+  <!-- DPI button -->
+  <rect x="95" y="100" width="10" height="14" rx="4" fill="#131316"/>
+
+  <!-- G logo -->
+  <path d="M114,146 A20,20 0 1 0 114,174 L114,160 L102,160"
+        fill="none" stroke="#00b0f5" stroke-width="6"/>
+</svg>

@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"logitux/internal/config"
@@ -20,200 +23,469 @@ func loadingPlaceholder() fyne.CanvasObject {
 	return container.NewCenter(widget.NewLabel("Looking for Logitech devices..."))
 }
 
-// buildDeviceList renders one tab per connected device, or an explanatory
-// message when nothing was found. Tabs appear and disappear automatically
-// as devices connect/disconnect, since this is rebuilt from the live
-// device list on every discovery tick (see appState.refresh); there's
-// nothing separate to reconcile.
-func buildDeviceList(a *appState, devices []device.Device) fyne.CanvasObject {
-	if len(devices) == 0 {
-		msg := widget.NewLabel("No supported Logitech devices found.\n\n" +
-			"Make sure the device is plugged in and the udev rule installed by " +
-			"LogiTux's installer has been applied (see the README).")
-		msg.Wrapping = fyne.TextWrapWord
-		msg.Alignment = fyne.TextAlignCenter
-		return container.NewCenter(msg)
+// buildMainView renders the app's single-screen navigation, G HUB-style:
+// the dashboard of device cards is the home screen, tapping a card opens
+// that device's page full-window, and a back arrow in the page's top-left
+// returns to the dashboard. Rebuilt from the live device list on every
+// discovery tick (see appState.refresh); a.selectedSerial carries which
+// screen is showing across rebuilds, and falls back to the dashboard if
+// the open device's page unplugs.
+func buildMainView(a *appState, devices []device.Device) fyne.CanvasObject {
+	if d := a.selectedDevice(devices); d != nil {
+		return buildDevicePage(a, devices, d)
 	}
-
-	labels := make([]string, len(devices))
-	seen := make(map[string]int, len(devices))
-	for _, d := range devices {
-		seen[d.Info().Name]++
-	}
-	for i, d := range devices {
-		name := d.Info().Name
-		if seen[name] > 1 {
-			// Disambiguate same-model devices with a short serial suffix.
-			serial := d.Info().Serial
-			if len(serial) > 6 {
-				serial = serial[len(serial)-6:]
-			}
-			name = fmt.Sprintf("%s (%s)", name, serial)
-		}
-		labels[i] = name
-	}
-
-	deviceItems := make([]*container.TabItem, len(devices))
-	for i, d := range devices {
-		deviceItems[i] = container.NewTabItem(labels[i], container.NewVScroll(buildDeviceCard(a, d)))
-	}
-
-	tabs := container.NewAppTabs()
-	dashboardItem := container.NewTabItem("Dashboard", buildDashboard(devices, func(index int) {
-		tabs.Select(deviceItems[index])
-	}))
-	tabs.Append(dashboardItem)
-	for _, item := range deviceItems {
-		tabs.Append(item)
-	}
-	tabs.OnSelected = func(item *container.TabItem) {
-		a.selectedTab = item.Text
-	}
-
-	// Restore whichever tab was selected before this rebuild (a fresh
-	// start, with no prior selection, lands on the Dashboard).
-	selectItem := dashboardItem
-	for i, l := range labels {
-		if l == a.selectedTab {
-			selectItem = deviceItems[i]
-		}
-	}
-	tabs.Select(selectItem)
-	a.selectedTab = selectItem.Text
-
-	return tabs
+	a.selectedSerial = ""
+	return buildDashboard(devices, func(index int) {
+		a.selectedSerial = devices[index].Info().Serial
+		a.window.SetContent(buildMainView(a, devices))
+	})
 }
 
-// buildDeviceCard renders the controls a device supports, based on which
-// capability interfaces it implements. Initial widget values come from the
-// last-known state in config.Store; they are set directly on the widget
-// fields (not via SetValue/SetChecked) so seeding the UI never sends a
-// command to the device before the user interacts with it.
-//
-// Controls are split into two groups: the handful someone actually
-// adjusts often (power, primary brightness/DPI, battery) stay directly on
-// the card; everything else (color temperature, report rate, RGB, button
-// remapping, sidetone, equalizer) lives in a collapsed "Advanced" section,
-// since a card listing every capability at once got overwhelming once a
-// device had several of them (e.g. a headset's ten-band equalizer).
-func buildDeviceCard(a *appState, d device.Device) fyne.CanvasObject {
+// selectedDevice resolves a.selectedSerial against the current device
+// list: the device whose page should be showing, or nil for the
+// dashboard (nothing selected, or the selected device is gone).
+func (a *appState) selectedDevice(devices []device.Device) device.Device {
+	if a.selectedSerial == "" {
+		return nil
+	}
+	for _, d := range devices {
+		if d.Info().Serial == a.selectedSerial {
+			return d
+		}
+	}
+	return nil
+}
+
+// pageSection is one entry in a device page's left-hand icon rail —
+// Sensitivity, Assignments, Lighting, Sound — with the settings panel it
+// opens. A device only gets the sections its capabilities call for.
+type pageSection struct {
+	id   string
+	icon fyne.Resource
+	body fyne.CanvasObject
+}
+
+// buildDevicePage renders one device's page, laid out like G HUB's: a
+// back arrow and the device name across the top, an icon rail on the far
+// left selecting a section, that section's settings in a panel beside
+// it, and the rest of the window given to a showcase — battery readout
+// and a large product render. Devices with no configurable sections
+// (nothing beyond battery) just get the showcase.
+func buildDevicePage(a *appState, devices []device.Device, d device.Device) fyne.CanvasObject {
+	info := d.Info()
+
+	back := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
+		a.selectedSerial = ""
+		a.window.SetContent(buildMainView(a, devices))
+	})
+	back.Importance = widget.LowImportance
+
+	title := canvas.NewText(strings.ToUpper(info.Name), colorForeground)
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	title.TextSize = theme.Size(theme.SizeNameSubHeadingText)
+	topBar := container.NewHBox(back, container.NewPadded(title))
+
+	// Lights get a halo behind their showcase render that tracks the
+	// power/brightness/temperature controls live, like G HUB's Litra
+	// page, where the render actually glows.
+	var glow *lightGlow
+	if info.Kind == device.KindLight {
+		saved, _ := a.store.Get(info.Serial)
+		glow = newLightGlow(saved)
+	}
+
+	showcase := deviceShowcase(a, d, glow)
+	sections := deviceSections(a, d, glow)
+	if len(sections) == 0 {
+		return container.NewBorder(topBar, nil, nil, nil, showcase)
+	}
+
+	// Restore this device's previously selected section across rebuilds,
+	// defaulting to its first.
+	selected := 0
+	for i, s := range sections {
+		if s.id == a.pageSection[info.Serial] {
+			selected = i
+		}
+	}
+	a.pageSection[info.Serial] = sections[selected].id
+
+	railButtons := make([]fyne.CanvasObject, len(sections))
+	for i, s := range sections {
+		s := s
+		b := widget.NewButtonWithIcon("", s.icon, func() {
+			a.pageSection[info.Serial] = s.id
+			a.window.SetContent(buildMainView(a, devices))
+		})
+		b.Importance = widget.LowImportance
+		if i == selected {
+			b.Importance = widget.HighImportance // accent square, like G HUB's rail
+		}
+		railButtons[i] = b
+	}
+	rail := container.NewVBox(railButtons...)
+
+	panelBG := canvas.NewRectangle(colorCard)
+	panelBG.CornerRadius = 10
+	panelSizer := canvas.NewRectangle(color.Transparent)
+	panelSizer.SetMinSize(fyne.NewSize(300, 0))
+	panel := container.NewStack(panelBG, panelSizer,
+		container.NewVScroll(container.NewPadded(container.NewPadded(sections[selected].body))))
+
+	left := container.NewHBox(container.NewPadded(rail), panel)
+	content := container.NewBorder(nil, nil, left, nil, showcase)
+	return container.NewBorder(topBar, nil, nil, nil, container.NewPadded(content))
+}
+
+// lightGlow is the halo behind a light's showcase render. The lighting
+// panel's controls update it as the user adjusts them, so the render
+// reflects the light's actual state: off means no halo, and the halo's
+// tint and strength follow color temperature and brightness.
+type lightGlow struct {
+	gradient   *canvas.RadialGradient
+	on         bool
+	brightness int
+	kelvin     int
+}
+
+func newLightGlow(saved config.DeviceState) *lightGlow {
+	g := &lightGlow{
+		gradient:   canvas.NewRadialGradient(color.Transparent, color.Transparent),
+		on:         saved.Power,
+		brightness: saved.Brightness,
+		kelvin:     saved.Temperature,
+	}
+	// Same defaults the panel's widgets seed with, so halo and controls
+	// agree before the user touches anything.
+	if g.brightness <= 0 {
+		g.brightness = 50
+	}
+	if g.kelvin <= 0 {
+		g.kelvin = (minLitraKelvin + maxLitraKelvin) / 2
+	}
+	g.apply()
+	return g
+}
+
+func (g *lightGlow) apply() {
+	if g.on {
+		// Halfway between the Kelvin tint and pure white: a raw warm/cool
+		// tint over the black background reads gray, not glowing.
+		c := kelvinColor(g.kelvin)
+		c.R += (0xff - c.R) / 2
+		c.G += (0xff - c.G) / 2
+		c.B += (0xff - c.B) / 2
+		c.A = uint8(0x24 + g.brightness*0x8c/100)
+		g.gradient.StartColor = c
+	} else {
+		g.gradient.StartColor = color.NRGBA{}
+	}
+	g.gradient.Refresh()
+}
+
+func (g *lightGlow) setPower(on bool)          { g.on = on; g.apply() }
+func (g *lightGlow) setBrightness(pct int)     { g.brightness = pct; g.apply() }
+func (g *lightGlow) setTemperature(kelvin int) { g.kelvin = kelvin; g.apply() }
+
+// The Litra range; kelvinColor interpolates across it. Fine for other
+// future lights too — tints outside it just clamp to the endpoints.
+const (
+	minLitraKelvin = 2700
+	maxLitraKelvin = 6500
+)
+
+var (
+	warmColor = color.NRGBA{R: 0xff, G: 0xc2, B: 0x70, A: 0xff} // ~2700K
+	coolColor = color.NRGBA{R: 0xcf, G: 0xe2, B: 0xff, A: 0xff} // ~6500K
+)
+
+// kelvinColor approximates a color temperature as an RGB tint by
+// interpolating between a warm and a cool endpoint — plenty for a UI
+// halo; nobody is color-grading against it.
+func kelvinColor(kelvin int) color.NRGBA {
+	t := float64(kelvin-minLitraKelvin) / float64(maxLitraKelvin-minLitraKelvin)
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	lerp := func(a, b uint8) uint8 { return uint8(float64(a) + t*(float64(b)-float64(a))) }
+	return color.NRGBA{
+		R: lerp(warmColor.R, coolColor.R),
+		G: lerp(warmColor.G, coolColor.G),
+		B: lerp(warmColor.B, coolColor.B),
+		A: 0xff,
+	}
+}
+
+// deviceShowcase fills a device page's main area, G HUB-style: battery
+// level (and serial) in the top-left corner, and — under a faded
+// oversized product name — either the device's equalizer (G HUB gives
+// headsets' ADVANCED EQ the main area, in place of the render) or a
+// large product render. glow, non-nil only for lights, is layered behind
+// the render.
+func deviceShowcase(a *appState, d device.Device, glow *lightGlow) fyne.CanvasObject {
+	info := d.Info()
+
+	var infoRows []fyne.CanvasObject
+	if bs, ok := d.(device.BatteryStatus); ok {
+		if percent, charging, err := bs.Battery(); err == nil {
+			infoRows = append(infoRows, panelCaption("Battery Level"))
+			value := canvas.NewText(fmt.Sprintf("%d%%", percent), colorForeground)
+			value.TextStyle = fyne.TextStyle{Bold: true}
+			value.TextSize = theme.Size(theme.SizeNameHeadingText)
+			row := container.NewHBox(value)
+			if charging {
+				bolt := canvas.NewImageFromResource(boltIcon)
+				bolt.FillMode = canvas.ImageFillContain
+				bolt.SetMinSize(fyne.NewSize(14, 19))
+				row.Add(container.NewVBox(layout.NewSpacer(), bolt, layout.NewSpacer()))
+			}
+			infoRows = append(infoRows, row)
+		}
+	}
+	if info.Serial != "" {
+		infoRows = append(infoRows, panelCaption("Serial"), panelValue(info.Serial))
+	}
+	// Keep the block hugging the top-left corner rather than stretching.
+	corner := container.NewVBox(container.NewHBox(container.NewPadded(container.NewVBox(infoRows...))))
+
+	ghost := canvas.NewText(strings.ToUpper(info.Name), color.NRGBA{R: 0x28, G: 0x28, B: 0x2c, A: 0xff})
+	ghost.TextStyle = fyne.TextStyle{Bold: true}
+	ghost.TextSize = theme.Size(theme.SizeNameHeadingText) * 1.7
+	if len(info.Name) > 18 {
+		// Long names ("PRO X WIRELESS GAMING HEADSET") would clip and
+		// run under the corner info block at full display size.
+		ghost.TextSize = theme.Size(theme.SizeNameHeadingText)
+	}
+
+	var feature fyne.CanvasObject
+	if eq, ok := d.(device.EqualizerControl); ok && len(eq.EqualizerBands()) > 0 {
+		saved, _ := a.store.Get(info.Serial)
+		feature = equalizerShowcase(a, eq, info, info.Serial, saved, eq.EqualizerBands())
+	} else {
+		art := canvas.NewImageFromResource(artForDevice(info))
+		art.FillMode = canvas.ImageFillContain
+		art.SetMinSize(fyne.NewSize(340, 300))
+
+		feature = art
+		if glow != nil {
+			glow.gradient.SetMinSize(fyne.NewSize(400, 360))
+			feature = container.NewStack(glow.gradient, container.NewCenter(art))
+		}
+	}
+
+	center := container.NewVBox(
+		layout.NewSpacer(),
+		container.NewCenter(ghost),
+		container.NewCenter(feature),
+		layout.NewSpacer(),
+	)
+	return container.NewStack(center, corner)
+}
+
+// deviceSections assembles the page sections a device's capabilities
+// call for. Initial widget values come from the last-known state in
+// config.Store (or a live read where the hardware supports one); they
+// are set directly on the widget fields — not via SetValue/SetChecked —
+// so seeding the UI never sends a command to the device before the user
+// interacts with it.
+func deviceSections(a *appState, d device.Device, glow *lightGlow) []pageSection {
 	info := d.Info()
 	serial := info.Serial
 	saved, _ := a.store.Get(serial)
 
-	main := container.NewVBox()
-	if serial != "" {
-		// Some devices have no USB serial descriptor and nothing else to
-		// derive one from (e.g. this PRO X Wireless's dongle); nothing
-		// useful to show in that case, so the row is omitted rather than
-		// left dangling as "Serial: ".
-		main.Add(widget.NewLabel(fmt.Sprintf("Serial: %s", serial)))
-	}
-	var advanced []fyne.CanvasObject
-	addAdvanced := func(items ...fyne.CanvasObject) { advanced = append(advanced, items...) }
-
-	if pc, ok := d.(device.PowerControl); ok {
-		check := widget.NewCheck("Power", nil)
-		check.Checked = saved.Power
-		check.OnChanged = func(on bool) {
-			if err := pc.SetPower(on); err != nil {
-				log.Printf("logitux: set power on %s: %v", info.Name, err)
-				return
-			}
-			a.saveState(serial, func(s *config.DeviceState) { s.Power = on })
+	var sections []pageSection
+	add := func(id string, icon fyne.Resource, body fyne.CanvasObject) {
+		if body != nil {
+			sections = append(sections, pageSection{id: id, icon: icon, body: body})
 		}
-		main.Add(check)
+	}
+	add("sensitivity", sensitivityIcon, sensitivityPanel(a, d, info, serial, saved))
+	add("assignments", assignmentsIcon, assignmentsPanel(a, d, info, serial, saved))
+	add("lighting", lightingIcon, lightingPanel(a, d, info, serial, saved, glow))
+	add("sound", soundIcon, soundPanel(a, d, info, serial, saved))
+	add("camera", cameraIcon, cameraPanel(d, info))
+	add("image", imageIcon, imagePanel(d, info))
+	return sections
+}
+
+// --- panel building blocks -------------------------------------------------
+
+// panelHeading is a section's title, e.g. "Sensitivity (DPI)".
+func panelHeading(text string) fyne.CanvasObject {
+	t := canvas.NewText(text, colorForeground)
+	t.TextStyle = fyne.TextStyle{Bold: true}
+	t.TextSize = theme.Size(theme.SizeNameSubHeadingText)
+	return t
+}
+
+// panelNote is short explanatory text under a heading.
+func panelNote(lines ...string) fyne.CanvasObject {
+	box := container.NewVBox()
+	for _, l := range lines {
+		t := canvas.NewText(l, colorSecondary)
+		t.TextSize = theme.Size(theme.SizeNameCaptionText)
+		box.Add(t)
+	}
+	return box
+}
+
+// panelCaption is a small uppercase gray field label, G HUB-style
+// (e.g. "REPORT RATE (PER SECOND)").
+func panelCaption(text string) fyne.CanvasObject {
+	t := canvas.NewText(strings.ToUpper(text), colorSecondary)
+	t.TextSize = theme.Size(theme.SizeNameCaptionText)
+	return t
+}
+
+// panelValue is a plain value line under a caption.
+func panelValue(text string) fyne.CanvasObject {
+	t := canvas.NewText(text, colorForeground)
+	t.TextSize = theme.Size(theme.SizeNameText)
+	return t
+}
+
+// labeledSlider renders a caption row with a live bold readout of the
+// current value right-aligned (G HUB-style), the slider, and the range's
+// ends labeled beneath it. onChanged receives each new value after the
+// readout has updated. The slider is returned alongside so callers can
+// enable/disable it (e.g. a manual focus slider while autofocus is on).
+func labeledSlider(captionText string, format func(int) string, initial, min, max, step int, onChanged func(int)) (fyne.CanvasObject, *widget.Slider) {
+	value := canvas.NewText(format(initial), colorForeground)
+	value.TextStyle = fyne.TextStyle{Bold: true}
+	value.TextSize = theme.Size(theme.SizeNameText)
+
+	slider := widget.NewSlider(float64(min), float64(max))
+	slider.Value = float64(initial)
+	slider.Step = float64(step)
+	slider.OnChanged = func(v float64) {
+		value.Text = format(int(v))
+		value.Refresh()
+		onChanged(int(v))
 	}
 
-	if bc, ok := d.(device.BrightnessControl); ok {
-		initial := saved.Brightness
-		if initial <= 0 {
-			initial = 50
-		}
-		label := widget.NewLabel(fmt.Sprintf("Brightness: %d%%", initial))
-		slider := widget.NewSlider(0, 100)
-		slider.Value = float64(initial)
-		slider.Step = 1
-		slider.OnChanged = func(v float64) {
-			percent := int(v)
-			label.SetText(fmt.Sprintf("Brightness: %d%%", percent))
-			if err := bc.SetBrightness(percent); err != nil {
-				log.Printf("logitux: set brightness on %s: %v", info.Name, err)
-				return
-			}
-			a.saveState(serial, func(s *config.DeviceState) { s.Brightness = percent })
-		}
-		main.Add(label)
-		main.Add(slider)
+	left := canvas.NewText(format(min), colorSecondary)
+	left.TextSize = theme.Size(theme.SizeNameCaptionText)
+	right := canvas.NewText(format(max), colorSecondary)
+	right.TextSize = theme.Size(theme.SizeNameCaptionText)
+
+	return container.NewVBox(
+		container.NewHBox(panelCaption(captionText), layout.NewSpacer(), value),
+		slider,
+		container.NewHBox(left, layout.NewSpacer(), right),
+	), slider
+}
+
+// gradientSlider is labeledSlider plus what G HUB's light sliders have:
+// a gradient strip under the track previewing what the ends mean, with
+// end labels (e.g. "Cool" ... "Warm"). The current value still gets a
+// bold readout, right-aligned on the caption row.
+func gradientSlider(captionText string, format func(int) string, leftLabel, rightLabel string, start, end color.Color, initial, min, max, step int, onChanged func(int)) fyne.CanvasObject {
+	value := canvas.NewText(format(initial), colorForeground)
+	value.TextStyle = fyne.TextStyle{Bold: true}
+	value.TextSize = theme.Size(theme.SizeNameText)
+
+	slider := widget.NewSlider(float64(min), float64(max))
+	slider.Value = float64(initial)
+	slider.Step = float64(step)
+	slider.OnChanged = func(v float64) {
+		value.Text = format(int(v))
+		value.Refresh()
+		onChanged(int(v))
 	}
 
-	if dc, ok := d.(device.DPIControl); ok {
+	strip := canvas.NewHorizontalGradient(start, end)
+	strip.SetMinSize(fyne.NewSize(0, 5))
+
+	left := canvas.NewText(leftLabel, colorSecondary)
+	left.TextSize = theme.Size(theme.SizeNameCaptionText)
+	right := canvas.NewText(rightLabel, colorSecondary)
+	right.TextSize = theme.Size(theme.SizeNameCaptionText)
+
+	return container.NewVBox(
+		container.NewHBox(panelCaption(captionText), layout.NewSpacer(), value),
+		slider,
+		strip,
+		container.NewHBox(left, layout.NewSpacer(), right),
+	)
+}
+
+// togglePill is G HUB's "POWER [ON]"-style row: caption on the left, a
+// pill toggle showing the current state on the right (accent-filled
+// while on). onChanged only runs when the device accepted the change,
+// so the pill never shows a state the hardware refused.
+func togglePill(captionText string, initial bool, apply func(on bool) error, onChanged func(on bool)) fyne.CanvasObject {
+	on := initial
+	toggle := widget.NewButton("", nil)
+	render := func() {
+		if on {
+			toggle.SetText("ON")
+			toggle.Importance = widget.HighImportance
+		} else {
+			toggle.SetText("OFF")
+			toggle.Importance = widget.MediumImportance
+		}
+		toggle.Refresh()
+	}
+	render()
+	toggle.OnTapped = func() {
+		if err := apply(!on); err != nil {
+			return // logged by the caller's apply; keep showing the real state
+		}
+		on = !on
+		render()
+		onChanged(on)
+	}
+
+	caption := container.NewVBox(layout.NewSpacer(), panelCaption(captionText), layout.NewSpacer())
+	return container.NewHBox(caption, layout.NewSpacer(), toggle)
+}
+
+// --- capability panels -----------------------------------------------------
+
+// sensitivityPanel covers DPIControl and ReportRateControl, or nil if
+// the device has neither.
+func sensitivityPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState) fyne.CanvasObject {
+	dc, hasDPI := d.(device.DPIControl)
+	rrc, hasRate := d.(device.ReportRateControl)
+	if !hasDPI && !hasRate {
+		return nil
+	}
+
+	body := container.NewVBox(
+		panelHeading("Sensitivity (DPI)"),
+		panelNote("DPI is the speed of your mouse", "on the screen."),
+		widget.NewLabel(""), // breathing room, G HUB-style sparse panel
+	)
+
+	if hasDPI {
 		min, max, step := dc.DPIRange()
 		initial := saved.DPI
 		if live, err := dc.DPI(); err == nil {
-			initial = live // the device can report this, unlike brightness/temperature
+			initial = live // the device can report this, unlike e.g. brightness
 		}
 		if initial <= 0 {
 			initial = min
 		}
-		label := widget.NewLabel(fmt.Sprintf("DPI: %d", initial))
-		slider := widget.NewSlider(float64(min), float64(max))
-		slider.Value = float64(initial)
-		slider.Step = float64(step)
-		slider.OnChanged = func(v float64) {
-			dpi := int(v)
-			label.SetText(fmt.Sprintf("DPI: %d", dpi))
-			if err := dc.SetDPI(dpi); err != nil {
-				log.Printf("logitux: set DPI on %s: %v", info.Name, err)
-				return
-			}
-			a.saveState(serial, func(s *config.DeviceState) { s.DPI = dpi })
-		}
-		main.Add(label)
-		main.Add(slider)
+		dpiSlider, _ := labeledSlider("DPI Speed", func(v int) string { return fmt.Sprintf("%d", v) },
+			initial, min, max, step, func(dpi int) {
+				if err := dc.SetDPI(dpi); err != nil {
+					log.Printf("logitux: set DPI on %s: %v", info.Name, err)
+					return
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.DPI = dpi })
+			})
+		body.Add(dpiSlider)
 	}
 
-	if bs, ok := d.(device.BatteryStatus); ok {
-		text := "Battery: unavailable"
-		if percent, charging, err := bs.Battery(); err == nil {
-			state := "Discharging"
-			if charging {
-				state = "Charging"
-			}
-			text = fmt.Sprintf("Battery: %d%% (%s)", percent, state)
-		}
-		main.Add(widget.NewLabel(text))
-	}
-
-	if tc, ok := d.(device.TemperatureControl); ok {
-		min, max := tc.TemperatureRange()
-		initial := saved.Temperature
-		if initial <= 0 {
-			initial = (min + max) / 2
-		}
-		label := widget.NewLabel(fmt.Sprintf("Color Temperature: %dK", initial))
-		slider := widget.NewSlider(float64(min), float64(max))
-		slider.Value = float64(initial)
-		slider.Step = 100
-		slider.OnChanged = func(v float64) {
-			kelvin := int(v)
-			label.SetText(fmt.Sprintf("Color Temperature: %dK", kelvin))
-			if err := tc.SetTemperature(kelvin); err != nil {
-				log.Printf("logitux: set temperature on %s: %v", info.Name, err)
-				return
-			}
-			a.saveState(serial, func(s *config.DeviceState) { s.Temperature = kelvin })
-		}
-		addAdvanced(label, slider)
-	}
-
-	if rrc, ok := d.(device.ReportRateControl); ok {
-		options := rrc.ReportRateOptions()
-		if len(options) > 0 {
+	if hasRate {
+		if options := rrc.ReportRateOptions(); len(options) > 0 {
 			labels := make([]string, len(options))
 			hzByLabel := make(map[string]int, len(options))
 			for i, hz := range options {
-				l := fmt.Sprintf("%d Hz", hz)
+				l := fmt.Sprintf("%d", hz)
 				labels[i] = l
 				hzByLabel[l] = hz
 			}
@@ -224,11 +496,12 @@ func buildDeviceCard(a *appState, d device.Device) fyne.CanvasObject {
 			} else if saved.ReportRate > 0 {
 				initial = saved.ReportRate
 			}
-			initialLabel := fmt.Sprintf("%d Hz", initial)
 
-			selectWidget := widget.NewSelect(labels, nil)
-			selectWidget.Selected = initialLabel
-			selectWidget.OnChanged = func(l string) {
+			radio := widget.NewRadioGroup(labels, nil)
+			radio.Horizontal = true
+			radio.Required = true
+			radio.Selected = fmt.Sprintf("%d", initial)
+			radio.OnChanged = func(l string) {
 				hz := hzByLabel[l]
 				if err := rrc.SetReportRate(hz); err != nil {
 					log.Printf("logitux: set report rate on %s: %v", info.Name, err)
@@ -236,158 +509,28 @@ func buildDeviceCard(a *appState, d device.Device) fyne.CanvasObject {
 				}
 				a.saveState(serial, func(s *config.DeviceState) { s.ReportRate = hz })
 			}
-			addAdvanced(widget.NewLabel("Report Rate"), selectWidget)
+			body.Add(widget.NewLabel(""))
+			body.Add(panelCaption("Report Rate (per second)"))
+			body.Add(radio)
 		}
 	}
 
-	if stc, ok := d.(device.SidetoneControl); ok {
-		initial := saved.Sidetone
-		if live, err := stc.Sidetone(); err == nil {
-			initial = live
-		}
-		label := widget.NewLabel(fmt.Sprintf("Sidetone: %d%%", initial))
-		slider := widget.NewSlider(0, 100)
-		slider.Value = float64(initial)
-		slider.Step = 1
-		slider.OnChanged = func(v float64) {
-			percent := int(v)
-			label.SetText(fmt.Sprintf("Sidetone: %d%%", percent))
-			if err := stc.SetSidetone(percent); err != nil {
-				log.Printf("logitux: set sidetone on %s: %v", info.Name, err)
-				return
-			}
-			a.saveState(serial, func(s *config.DeviceState) { s.Sidetone = percent })
-		}
-		addAdvanced(label, slider)
-	}
-
-	if eq, ok := d.(device.EqualizerControl); ok {
-		if bands := eq.EqualizerBands(); len(bands) > 0 {
-			addAdvanced(equalizerSection(a, eq, info, serial, saved, bands))
-		}
-	}
-
-	if rgb, ok := d.(device.RGBControl); ok {
-		initial := color.NRGBA{R: saved.Red, G: saved.Green, B: saved.Blue, A: 0xff}
-		if saved.Red == 0 && saved.Green == 0 && saved.Blue == 0 {
-			initial = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // default to white, not invisible black
-		}
-
-		swatch := canvas.NewRectangle(initial)
-		swatch.SetMinSize(fyne.NewSize(28, 28))
-
-		chooseButton := widget.NewButton("Choose Logo Color...", nil)
-		chooseButton.OnTapped = func() {
-			picker := dialog.NewColorPicker("Logo Color", "Pick a color for the mouse's logo LED", func(c color.Color) {
-				swatch.FillColor = c
-				swatch.Refresh()
-				r, g, b, _ := c.RGBA() // 16-bit-per-channel components
-				r8, g8, b8 := uint8(r>>8), uint8(g>>8), uint8(b>>8)
-				if err := rgb.SetColor(r8, g8, b8); err != nil {
-					log.Printf("logitux: set LED color on %s: %v", info.Name, err)
-					return
-				}
-				a.saveState(serial, func(s *config.DeviceState) { s.Red, s.Green, s.Blue = r8, g8, b8 })
-			}, a.window)
-			picker.Advanced = true
-			picker.Show()
-		}
-
-		addAdvanced(container.NewHBox(widget.NewLabel("Logo Color:"), swatch, chooseButton))
-	}
-
-	if brc, ok := d.(device.ButtonRemapControl); ok {
-		if buttons, err := brc.Buttons(); err == nil && len(buttons) > 0 {
-			addAdvanced(buttonRemapSection(a, brc, info, serial, saved, buttons))
-		}
-	}
-
-	if len(advanced) > 0 {
-		main.Add(advancedSection(a, serial, advanced))
-	}
-
-	return container.NewPadded(main)
+	return body
 }
 
-// advancedSection is a manually-toggled collapsible section (rather than
-// widget.Accordion) so its open/closed state can be persisted in
-// appState.advancedOpen and restored across rebuilds — device cards are
-// rebuilt from scratch on every discovery tick, which would otherwise
-// re-collapse an Accordion (whose open state lives only in the discarded
-// widget instance) out from under the user every few seconds.
-func advancedSection(a *appState, serial string, items []fyne.CanvasObject) fyne.CanvasObject {
-	body := container.NewVBox(items...)
-	body.Hidden = !a.advancedOpen[serial]
-
-	toggle := widget.NewButton(advancedButtonLabel(body.Hidden), nil)
-	toggle.OnTapped = func() {
-		open := !a.advancedOpen[serial]
-		a.advancedOpen[serial] = open
-		body.Hidden = !open
-		toggle.SetText(advancedButtonLabel(body.Hidden))
+// assignmentsPanel covers ButtonRemapControl: one dropdown per
+// remappable button, each offering "Default" plus every target in
+// uinput.Targets. Nil if the device has no remappable buttons.
+func assignmentsPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState) fyne.CanvasObject {
+	brc, ok := d.(device.ButtonRemapControl)
+	if !ok {
+		return nil
+	}
+	buttons, err := brc.Buttons()
+	if err != nil || len(buttons) == 0 {
+		return nil
 	}
 
-	return container.NewVBox(toggle, body)
-}
-
-func advancedButtonLabel(hidden bool) string {
-	if hidden {
-		return "▸ Advanced"
-	}
-	return "▾ Advanced"
-}
-
-// equalizerSection renders one slider per equalizer band. All sliders
-// share a single in-memory levels snapshot (seeded from a live read, or
-// last-saved values if that fails) rather than re-reading the device on
-// every change, since SetEqualizerLevels writes every band's level at
-// once and a slider can fire OnChanged many times during a single drag.
-func equalizerSection(a *appState, eq device.EqualizerControl, info device.Info, serial string, saved config.DeviceState, bands []device.EqualizerBand) fyne.CanvasObject {
-	min, max := eq.EqualizerRange()
-
-	levels := make([]int, len(bands))
-	if live, err := eq.EqualizerLevels(); err == nil && len(live) == len(bands) {
-		copy(levels, live)
-	} else if len(saved.EqualizerLevels) == len(bands) {
-		copy(levels, saved.EqualizerLevels)
-	}
-
-	section := container.NewVBox(widget.NewLabel("Equalizer"))
-	for i, band := range bands {
-		i := i
-		freqLabel := formatFrequency(band.FrequencyHz)
-
-		label := widget.NewLabel(fmt.Sprintf("%s: %ddB", freqLabel, levels[i]))
-		slider := widget.NewSlider(float64(min), float64(max))
-		slider.Value = float64(levels[i])
-		slider.Step = 1
-		slider.OnChanged = func(v float64) {
-			levels[i] = int(v)
-			label.SetText(fmt.Sprintf("%s: %ddB", freqLabel, levels[i]))
-			if err := eq.SetEqualizerLevels(levels); err != nil {
-				log.Printf("logitux: set equalizer on %s: %v", info.Name, err)
-				return
-			}
-			saveLevels := append([]int(nil), levels...)
-			a.saveState(serial, func(s *config.DeviceState) { s.EqualizerLevels = saveLevels })
-		}
-		section.Add(container.NewHBox(label, slider))
-	}
-	return section
-}
-
-// formatFrequency renders a band frequency compactly, e.g. 125 -> "125Hz",
-// 8000 -> "8kHz".
-func formatFrequency(hz int) string {
-	if hz >= 1000 {
-		return fmt.Sprintf("%gkHz", float64(hz)/1000)
-	}
-	return fmt.Sprintf("%dHz", hz)
-}
-
-// buttonRemapSection renders one dropdown per remappable button, each
-// offering "Default" plus every target in uinput.Targets.
-func buttonRemapSection(a *appState, brc device.ButtonRemapControl, info device.Info, serial string, saved config.DeviceState, buttons []device.ButtonInfo) fyne.CanvasObject {
 	labels := make([]string, 0, len(uinput.Targets)+1)
 	labels = append(labels, "Default")
 	targetByLabel := map[string]uint16{"Default": 0}
@@ -398,7 +541,11 @@ func buttonRemapSection(a *appState, brc device.ButtonRemapControl, info device.
 		labelByTarget[t.Code] = t.Label
 	}
 
-	section := container.NewVBox(widget.NewLabel("Button Remapping"))
+	body := container.NewVBox(
+		panelHeading("Assignments"),
+		panelNote("Reassign a button to another", "mouse button or a keyboard key."),
+		widget.NewLabel(""),
+	)
 	for _, b := range buttons {
 		initialLabel := "Default"
 		if target, ok := saved.ButtonRemaps[b.ID]; ok {
@@ -426,7 +573,512 @@ func buttonRemapSection(a *appState, brc device.ButtonRemapControl, info device.
 				}
 			})
 		}
-		section.Add(container.NewHBox(widget.NewLabel(b.Name+":"), selectWidget))
+		body.Add(panelCaption(b.Name))
+		body.Add(selectWidget)
 	}
-	return section
+	return body
+}
+
+// lightingPanel covers the light-shaped capabilities: power, color
+// temperature, and brightness (Litra lights, laid out in G HUB's order
+// with its gradient sliders), and RGB logo color (mice). Nil if the
+// device has none of them. glow (non-nil only for lights) is kept in
+// sync so the showcase render reflects each change.
+func lightingPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState, glow *lightGlow) fyne.CanvasObject {
+	pc, hasPower := d.(device.PowerControl)
+	bc, hasBrightness := d.(device.BrightnessControl)
+	tc, hasTemperature := d.(device.TemperatureControl)
+	rgb, hasRGB := d.(device.RGBControl)
+	if !hasPower && !hasBrightness && !hasTemperature && !hasRGB {
+		return nil
+	}
+
+	heading := "Lighting"
+	if info.Kind == device.KindLight {
+		heading = "Light" // G HUB's own heading on the Litra page
+	}
+	body := container.NewVBox(
+		panelHeading(heading),
+		widget.NewLabel(""),
+	)
+
+	if hasPower {
+		body.Add(togglePill("Power", saved.Power,
+			func(on bool) error {
+				if err := pc.SetPower(on); err != nil {
+					log.Printf("logitux: set power on %s: %v", info.Name, err)
+					return err
+				}
+				return nil
+			},
+			func(on bool) {
+				if glow != nil {
+					glow.setPower(on)
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.Power = on })
+			}))
+		body.Add(widget.NewLabel(""))
+	}
+
+	if hasTemperature {
+		min, max := tc.TemperatureRange()
+		initial := saved.Temperature
+		if initial <= 0 {
+			initial = (min + max) / 2
+		}
+		// Left end = min Kelvin = warm, so the strip runs warm-to-cool —
+		// mirrored from G HUB's, whose slider runs the other direction.
+		body.Add(gradientSlider("Temperature", func(v int) string { return fmt.Sprintf("%dK", v) },
+			"Warm", "Cool", warmColor, coolColor,
+			initial, min, max, 100, func(kelvin int) {
+				if err := tc.SetTemperature(kelvin); err != nil {
+					log.Printf("logitux: set temperature on %s: %v", info.Name, err)
+					return
+				}
+				if glow != nil {
+					glow.setTemperature(kelvin)
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.Temperature = kelvin })
+			}))
+		body.Add(widget.NewLabel(""))
+	}
+
+	if hasBrightness {
+		initial := saved.Brightness
+		if initial <= 0 {
+			initial = 50
+		}
+		body.Add(gradientSlider("Brightness", func(v int) string { return fmt.Sprintf("%d%%", v) },
+			"Dim", "Bright", color.NRGBA{R: 0x3a, G: 0x3a, B: 0x40, A: 0xff}, color.NRGBA{R: 0xf2, G: 0xf2, B: 0xf2, A: 0xff},
+			initial, 0, 100, 1, func(percent int) {
+				if err := bc.SetBrightness(percent); err != nil {
+					log.Printf("logitux: set brightness on %s: %v", info.Name, err)
+					return
+				}
+				if glow != nil {
+					glow.setBrightness(percent)
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.Brightness = percent })
+			}))
+	}
+
+	if hasRGB {
+		initial := color.NRGBA{R: saved.Red, G: saved.Green, B: saved.Blue, A: 0xff}
+		if saved.Red == 0 && saved.Green == 0 && saved.Blue == 0 {
+			initial = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // default to white, not invisible black
+		}
+
+		swatch := canvas.NewRectangle(initial)
+		swatch.CornerRadius = 6
+		swatch.SetMinSize(fyne.NewSize(28, 28))
+
+		chooseButton := widget.NewButton("Choose...", nil)
+		chooseButton.OnTapped = func() {
+			picker := dialog.NewColorPicker("Logo Color", "Pick a color for the logo LED", func(c color.Color) {
+				swatch.FillColor = c
+				swatch.Refresh()
+				r, g, b, _ := c.RGBA() // 16-bit-per-channel components
+				r8, g8, b8 := uint8(r>>8), uint8(g>>8), uint8(b>>8)
+				if err := rgb.SetColor(r8, g8, b8); err != nil {
+					log.Printf("logitux: set LED color on %s: %v", info.Name, err)
+					return
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.Red, s.Green, s.Blue = r8, g8, b8 })
+			}, a.window)
+			picker.Advanced = true
+			picker.Show()
+		}
+
+		body.Add(panelCaption("Logo Color"))
+		body.Add(container.NewHBox(swatch, chooseButton))
+	}
+
+	return body
+}
+
+// soundPanel covers SidetoneControl and EqualizerControl (headsets), or
+// nil if the device has neither. The equalizer itself renders in the
+// showcase area (see equalizerShowcase), like G HUB's ADVANCED EQ; the
+// panel holds the sidetone slider.
+func soundPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState) fyne.CanvasObject {
+	stc, hasSidetone := d.(device.SidetoneControl)
+	_, hasEQ := d.(device.EqualizerControl)
+	if !hasSidetone && !hasEQ {
+		return nil
+	}
+
+	heading := "Sound"
+	if info.Kind == device.KindHeadset {
+		heading = "Headphones" // G HUB's own heading on headset pages
+	}
+	body := container.NewVBox(
+		panelHeading(heading),
+		widget.NewLabel(""),
+	)
+
+	if hasSidetone {
+		initial := saved.Sidetone
+		if live, err := stc.Sidetone(); err == nil {
+			initial = live
+		}
+		sidetoneSlider, _ := labeledSlider("Sidetone", func(v int) string { return fmt.Sprintf("%d%%", v) },
+			initial, 0, 100, 1, func(percent int) {
+				if err := stc.SetSidetone(percent); err != nil {
+					log.Printf("logitux: set sidetone on %s: %v", info.Name, err)
+					return
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.Sidetone = percent })
+			})
+		body.Add(sidetoneSlider)
+	}
+
+	if hasEQ {
+		body.Add(widget.NewLabel(""))
+		body.Add(panelNote("The advanced EQ is on the right;", "changes apply immediately."))
+	}
+
+	return body
+}
+
+// equalizerShowcase renders a device's equalizer the way G HUB does:
+// a bank of vertical sliders across the page's main area, one per band,
+// with the frequency above and the current dB below each, a dB scale on
+// the left, and a reset button. All sliders share a single in-memory
+// levels snapshot (seeded from a live read, or last-saved values if that
+// fails) rather than re-reading the device on every change, since
+// SetEqualizerLevels writes every band's level at once and a slider can
+// fire OnChanged many times during a single drag.
+func equalizerShowcase(a *appState, eq device.EqualizerControl, info device.Info, serial string, saved config.DeviceState, bands []device.EqualizerBand) fyne.CanvasObject {
+	min, max := eq.EqualizerRange()
+
+	levels := make([]int, len(bands))
+	if live, err := eq.EqualizerLevels(); err == nil && len(live) == len(bands) {
+		copy(levels, live)
+	} else if len(saved.EqualizerLevels) == len(bands) {
+		copy(levels, saved.EqualizerLevels)
+	}
+
+	writeLevels := func() bool {
+		if err := eq.SetEqualizerLevels(levels); err != nil {
+			log.Printf("logitux: set equalizer on %s: %v", info.Name, err)
+			return false
+		}
+		saveLevels := append([]int(nil), levels...)
+		a.saveState(serial, func(s *config.DeviceState) { s.EqualizerLevels = saveLevels })
+		return true
+	}
+
+	small := func(text string) *canvas.Text {
+		t := canvas.NewText(text, colorSecondary)
+		t.TextSize = theme.Size(theme.SizeNameCaptionText)
+		return t
+	}
+
+	const sliderHeight = 230
+	sliders := make([]*widget.Slider, len(bands))
+	values := make([]*canvas.Text, len(bands))
+	columns := make([]fyne.CanvasObject, 0, len(bands)+1)
+
+	// dB scale, aligned with the sliders' track area.
+	scale := container.NewVBox(small(fmt.Sprintf("+%ddB", max)), layout.NewSpacer(), small("0"), layout.NewSpacer(), small(fmt.Sprintf("%ddB", min)))
+	scaleSizer := canvas.NewRectangle(color.Transparent)
+	scaleSizer.SetMinSize(fyne.NewSize(0, sliderHeight))
+	columns = append(columns, container.NewVBox(small(""), container.NewStack(scaleSizer, scale), small("")))
+
+	for i, band := range bands {
+		i := i
+		value := canvas.NewText(fmt.Sprintf("%d", levels[i]), colorForeground)
+		value.TextStyle = fyne.TextStyle{Bold: true}
+		value.TextSize = theme.Size(theme.SizeNameCaptionText)
+
+		slider := widget.NewSlider(float64(min), float64(max))
+		slider.Orientation = widget.Vertical
+		slider.Step = 1
+		slider.Value = float64(levels[i])
+		slider.OnChanged = func(v float64) {
+			levels[i] = int(v)
+			value.Text = fmt.Sprintf("%d", levels[i])
+			value.Refresh()
+			writeLevels()
+		}
+		sliders[i] = slider
+		values[i] = value
+
+		sizer := canvas.NewRectangle(color.Transparent)
+		sizer.SetMinSize(fyne.NewSize(34, sliderHeight))
+		columns = append(columns, container.NewVBox(
+			container.NewCenter(small(formatFrequency(band.FrequencyHz))),
+			container.NewStack(sizer, slider),
+			container.NewCenter(value),
+		))
+	}
+
+	reset := widget.NewButton("Reset", func() {
+		for i := range levels {
+			levels[i] = 0
+		}
+		if !writeLevels() {
+			return
+		}
+		for i := range sliders {
+			sliders[i].Value = 0
+			sliders[i].Refresh()
+			values[i].Text = "0"
+			values[i].Refresh()
+		}
+	})
+
+	return container.NewVBox(
+		container.NewCenter(panelCaption("Advanced EQ")),
+		widget.NewLabel(""),
+		container.NewCenter(container.NewHBox(columns...)),
+		widget.NewLabel(""),
+		container.NewCenter(reset),
+	)
+}
+
+// imageAdjustments are the CameraControlSet entries that belong on the
+// Image panel; everything else camera-shaped lives on the Camera panel.
+var imageAdjustments = map[string]bool{
+	"Brightness": true,
+	"Contrast":   true,
+	"Saturation": true,
+	"Sharpness":  true,
+}
+
+// cameraControlValue reads a control's live value, falling back to its
+// reported default if the read fails.
+func cameraControlValue(ccs device.CameraControlSet, c device.CameraControl) int {
+	if v, err := ccs.CameraControl(c.Name); err == nil {
+		return v
+	}
+	return c.Default
+}
+
+// cameraPanel covers a webcam's optics: zoom, pan/tilt (as a position
+// pad, like G HUB's), and focus and exposure with their auto toggles —
+// whichever of those the hardware reports having. Values live on the
+// device, so sliders seed from a live read.
+func cameraPanel(d device.Device, info device.Info) fyne.CanvasObject {
+	ccs, ok := d.(device.CameraControlSet)
+	if !ok {
+		return nil
+	}
+	byName := make(map[string]device.CameraControl)
+	for _, c := range ccs.CameraControls() {
+		if !imageAdjustments[c.Name] {
+			byName[c.Name] = c
+		}
+	}
+	if len(byName) == 0 {
+		return nil
+	}
+
+	set := func(name string, v int) {
+		if err := ccs.SetCameraControl(name, v); err != nil {
+			log.Printf("logitux: set %s on %s: %v", strings.ToLower(name), info.Name, err)
+		}
+	}
+
+	body := container.NewVBox(
+		panelHeading("Camera"),
+		widget.NewLabel(""),
+	)
+
+	if c, ok := byName["Zoom"]; ok {
+		// UVC zoom is already expressed as a percentage (100 = no zoom).
+		zoom, _ := labeledSlider("Zoom", func(v int) string { return fmt.Sprintf("%d%%", v) },
+			cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) { set("Zoom", v) })
+		body.Add(zoom)
+		body.Add(widget.NewLabel(""))
+	}
+
+	pan, hasPan := byName["Pan"]
+	tilt, hasTilt := byName["Tilt"]
+	if hasPan && hasTilt {
+		body.Add(panelCaption("Position"))
+		body.Add(container.NewCenter(positionPad(ccs, info, pan, tilt)))
+		body.Add(widget.NewLabel(""))
+	}
+
+	if c, ok := byName["Focus"]; ok || byName["Auto Focus"].Name != "" {
+		var focusSlider *widget.Slider
+		var focusRow fyne.CanvasObject
+		if ok {
+			focusRow, focusSlider = labeledSlider("Focus", func(v int) string { return fmt.Sprintf("%d", v) },
+				cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) { set("Focus", v) })
+		}
+		if af, hasAF := byName["Auto Focus"]; hasAF {
+			afOn := cameraControlValue(ccs, af) == 1
+			if focusSlider != nil && afOn {
+				focusSlider.Disable()
+			}
+			body.Add(togglePill("Auto Focus", afOn,
+				func(on bool) error {
+					v := 0
+					if on {
+						v = 1
+					}
+					if err := ccs.SetCameraControl("Auto Focus", v); err != nil {
+						log.Printf("logitux: set auto focus on %s: %v", info.Name, err)
+						return err
+					}
+					return nil
+				},
+				func(on bool) {
+					if focusSlider == nil {
+						return
+					}
+					if on {
+						focusSlider.Disable()
+					} else {
+						focusSlider.Enable()
+					}
+				}))
+		}
+		if focusRow != nil {
+			body.Add(focusRow)
+		}
+		body.Add(widget.NewLabel(""))
+	}
+
+	if c, hasExp := byName["Exposure"]; hasExp || byName["Auto Exposure"].Name != "" {
+		var expSlider *widget.Slider
+		var expRow fyne.CanvasObject
+		if hasExp {
+			expRow, expSlider = labeledSlider("Exposure", func(v int) string { return fmt.Sprintf("%d", v) },
+				cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) { set("Exposure", v) })
+		}
+		if ae, hasAE := byName["Auto Exposure"]; hasAE {
+			aeOn := cameraControlValue(ccs, ae) == 1
+			if expSlider != nil && aeOn {
+				expSlider.Disable()
+			}
+			body.Add(togglePill("Auto Exposure", aeOn,
+				func(on bool) error {
+					v := 0
+					if on {
+						v = 1
+					}
+					if err := ccs.SetCameraControl("Auto Exposure", v); err != nil {
+						log.Printf("logitux: set auto exposure on %s: %v", info.Name, err)
+						return err
+					}
+					return nil
+				},
+				func(on bool) {
+					if expSlider == nil {
+						return
+					}
+					if on {
+						expSlider.Disable()
+					} else {
+						expSlider.Enable()
+					}
+				}))
+		}
+		if expRow != nil {
+			body.Add(expRow)
+		}
+	}
+
+	return body
+}
+
+// positionPad is G HUB's pan/tilt control: four arrows nudging the view
+// by one hardware step, and a center button recentering both axes. The
+// current pan/tilt are tracked locally (seeded from a live read) rather
+// than re-read per tap.
+func positionPad(ccs device.CameraControlSet, info device.Info, pan, tilt device.CameraControl) fyne.CanvasObject {
+	panValue := cameraControlValue(ccs, pan)
+	tiltValue := cameraControlValue(ccs, tilt)
+
+	clamp := func(v, min, max int) int {
+		if v < min {
+			return min
+		}
+		if v > max {
+			return max
+		}
+		return v
+	}
+	set := func(name string, v int) bool {
+		if err := ccs.SetCameraControl(name, v); err != nil {
+			log.Printf("logitux: set %s on %s: %v", strings.ToLower(name), info.Name, err)
+			return false
+		}
+		return true
+	}
+
+	nudge := func(name string, current *int, delta, min, max int) func() {
+		return func() {
+			v := clamp(*current+delta, min, max)
+			if v != *current && set(name, v) {
+				*current = v
+			}
+		}
+	}
+
+	up := widget.NewButtonWithIcon("", theme.MoveUpIcon(), nudge("Tilt", &tiltValue, tilt.Step, tilt.Min, tilt.Max))
+	down := widget.NewButtonWithIcon("", theme.MoveDownIcon(), nudge("Tilt", &tiltValue, -tilt.Step, tilt.Min, tilt.Max))
+	right := widget.NewButtonWithIcon("", theme.NavigateNextIcon(), nudge("Pan", &panValue, pan.Step, pan.Min, pan.Max))
+	left := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), nudge("Pan", &panValue, -pan.Step, pan.Min, pan.Max))
+	center := widget.NewButtonWithIcon("", theme.MediaRecordIcon(), func() {
+		if set("Pan", 0) {
+			panValue = 0
+		}
+		if set("Tilt", 0) {
+			tiltValue = 0
+		}
+	})
+
+	blank := func() fyne.CanvasObject { return layout.NewSpacer() }
+	return container.NewGridWithColumns(3,
+		blank(), up, blank(),
+		left, center, right,
+		blank(), down, blank(),
+	)
+}
+
+// imagePanel covers a webcam's picture tuning (brightness, contrast,
+// saturation, sharpness), or nil if the device reports none of them.
+func imagePanel(d device.Device, info device.Info) fyne.CanvasObject {
+	ccs, ok := d.(device.CameraControlSet)
+	if !ok {
+		return nil
+	}
+
+	body := container.NewVBox(
+		panelHeading("Image"),
+		widget.NewLabel(""),
+	)
+	found := false
+	for _, c := range ccs.CameraControls() {
+		if !imageAdjustments[c.Name] {
+			continue
+		}
+		c := c
+		row, _ := labeledSlider(c.Name, func(v int) string { return fmt.Sprintf("%d", v) },
+			cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) {
+				if err := ccs.SetCameraControl(c.Name, v); err != nil {
+					log.Printf("logitux: set %s on %s: %v", strings.ToLower(c.Name), info.Name, err)
+				}
+			})
+		body.Add(row)
+		body.Add(widget.NewLabel(""))
+		found = true
+	}
+	if !found {
+		return nil
+	}
+	return body
+}
+
+// formatFrequency renders a band frequency compactly, e.g. 125 -> "125Hz",
+// 8000 -> "8kHz".
+func formatFrequency(hz int) string {
+	if hz >= 1000 {
+		return fmt.Sprintf("%gkHz", float64(hz)/1000)
+	}
+	return fmt.Sprintf("%dHz", hz)
 }

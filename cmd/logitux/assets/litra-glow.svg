@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 230">
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.8">
+      <stop offset="0" stop-color="#fefaf0"/>
+      <stop offset="0.75" stop-color="#f8efd8"/>
+      <stop offset="1" stop-color="#eaddba"/>
+    </radialGradient>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34343a"/>
+      <stop offset="1" stop-color="#232327"/>
+    </linearGradient>
+  </defs>
+
+  <!-- mount stub behind the panel's lower edge -->
+  <rect x="86" y="150" width="28" height="34" rx="7" fill="#1d1d21" stroke="#3a3a40" stroke-width="1.5"/>
+
+  <!-- light panel -->
+  <rect x="33" y="22" width="134" height="134" rx="28" fill="url(#shell)" stroke="#45454c" stroke-width="1.5"/>
+  <rect x="42" y="31" width="116" height="116" rx="20" fill="url(#glow)"/>
+</svg>

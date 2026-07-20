@@ -2,21 +2,31 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"logitux/internal/device"
 )
 
-// buildDashboard renders one tappable tile per connected device, with an
-// icon (see assets.go) matching its Kind and its name/serial below.
-// Tapping a tile calls onSelect with that device's index in devices, so
-// the caller can switch to its full control tab.
+// Dashboard card geometry, sized so a product render dominates the card
+// the way G HUB's device tiles do.
+const (
+	tileWidth  float32 = 230
+	tileHeight float32 = 260
+)
+
+// buildDashboard renders one tappable G HUB-style card per connected
+// device: bold uppercase name, battery status, a large product render
+// (see assets.go), and a settings button. Tapping a card (or its gear)
+// calls onSelect with that device's index in devices, so the caller can
+// open its device page.
 func buildDashboard(devices []device.Device, onSelect func(index int)) fyne.CanvasObject {
 	if len(devices) == 0 {
 		msg := widget.NewLabel("No supported Logitech devices found.\n\n" +
@@ -27,27 +37,46 @@ func buildDashboard(devices []device.Device, onSelect func(index int)) fyne.Canv
 		return container.NewCenter(msg)
 	}
 
+	seen := make(map[string]int, len(devices))
+	for _, d := range devices {
+		seen[d.Info().Name]++
+	}
+
 	tiles := make([]fyne.CanvasObject, len(devices))
 	for i, d := range devices {
 		index := i // captured per-iteration (Go 1.22+ loop semantics)
-		tiles[i] = newDeviceTile(d, func() { onSelect(index) })
+		name := d.Info().Name
+		if seen[name] > 1 {
+			// Disambiguate same-model devices with a short serial suffix,
+			// so their otherwise-identical cards can be told apart.
+			serial := d.Info().Serial
+			if len(serial) > 6 {
+				serial = serial[len(serial)-6:]
+			}
+			name = fmt.Sprintf("%s (%s)", name, serial)
+		}
+		tiles[i] = newDeviceTile(d, name, func() { onSelect(index) })
 	}
-	grid := container.NewGridWrap(fyne.NewSize(140, 160), tiles...)
+	grid := container.NewGridWrap(fyne.NewSize(tileWidth, tileHeight), tiles...)
 	return container.NewVScroll(container.NewPadded(grid))
 }
 
-// deviceTile is a small tappable card: an icon, the device's name, its
-// battery level if it has one, and its serial. Fyne's widget.Card isn't
-// itself tappable, so this is a minimal custom widget (BaseWidget +
-// Tapped) wrapping one instead.
+// deviceTile is one dashboard card, mimicking a G HUB device tile: name
+// top-left, battery below it, product image filling the middle, gear
+// bottom-right. Fyne's widget.Card isn't tappable (or hoverable), so this
+// is a custom widget; the whole card and the gear both open the device's
+// page.
 type deviceTile struct {
 	widget.BaseWidget
-	d     device.Device
-	onTap func()
+	d           device.Device
+	displayName string // Info().Name, possibly serial-suffixed by buildDashboard
+	onTap       func()
+
+	bg *canvas.Rectangle // kept for the hover highlight
 }
 
-func newDeviceTile(d device.Device, onTap func()) *deviceTile {
-	t := &deviceTile{d: d, onTap: onTap}
+func newDeviceTile(d device.Device, displayName string, onTap func()) *deviceTile {
+	t := &deviceTile{d: d, displayName: displayName, onTap: onTap}
 	t.ExtendBaseWidget(t)
 	return t
 }
@@ -55,33 +84,52 @@ func newDeviceTile(d device.Device, onTap func()) *deviceTile {
 func (t *deviceTile) CreateRenderer() fyne.WidgetRenderer {
 	info := t.d.Info()
 
-	icon := canvas.NewImageFromResource(iconForKind(info.Kind))
-	icon.FillMode = canvas.ImageFillContain
-	icon.SetMinSize(fyne.NewSize(56, 56))
+	t.bg = canvas.NewRectangle(colorCard)
+	t.bg.CornerRadius = 10
 
-	name := widget.NewLabel(info.Name)
-	name.Alignment = fyne.TextAlignCenter
-	name.Wrapping = fyne.TextWrapWord
+	name := canvas.NewText(strings.ToUpper(t.displayName), colorForeground)
+	name.TextStyle = fyne.TextStyle{Bold: true}
+	name.TextSize = theme.Size(theme.SizeNameText)
 
-	bg := canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
-	bg.CornerRadius = theme.Size(theme.SizeNameInputRadius)
+	top := container.NewVBox(name, batteryRow(t.d))
 
-	tileRows := []fyne.CanvasObject{container.NewCenter(icon), name}
+	art := canvas.NewImageFromResource(artForDevice(info))
+	art.FillMode = canvas.ImageFillContain
+	art.SetMinSize(fyne.NewSize(150, 130))
 
-	if bs, ok := t.d.(device.BatteryStatus); ok {
-		if percent, charging, err := bs.Battery(); err == nil {
-			text := fmt.Sprintf("%d%%", percent)
-			if charging {
-				text = "⚡ " + text // a bolt is the universal "charging" signal, not decorative
-			}
-			battery := widget.NewLabel(text)
-			battery.Alignment = fyne.TextAlignCenter
-			tileRows = append(tileRows, battery)
+	gear := widget.NewButtonWithIcon("", theme.SettingsIcon(), t.onTap)
+	gear.Importance = widget.LowImportance
+	bottom := container.NewHBox(layout.NewSpacer(), gear)
+
+	content := container.NewBorder(top, bottom, nil, nil, art)
+	pad := container.NewPadded(container.NewPadded(content))
+	return widget.NewSimpleRenderer(container.NewStack(t.bg, pad))
+}
+
+// batteryRow renders a card's status line: battery percentage plus a
+// bolt icon while charging (the universal "charging" signal), or a blank
+// placeholder for devices without a battery — the line stays either way,
+// keeping every card's layout identical, again like G HUB.
+func batteryRow(d device.Device) fyne.CanvasObject {
+	text := " "
+	charging := false
+	if bs, ok := d.(device.BatteryStatus); ok {
+		if percent, chg, err := bs.Battery(); err == nil {
+			text = fmt.Sprintf("%d%%", percent)
+			charging = chg
 		}
 	}
 
-	content := container.NewPadded(container.NewVBox(tileRows...))
-	return widget.NewSimpleRenderer(container.NewStack(bg, content))
+	label := canvas.NewText(text, colorSecondary)
+	label.TextSize = theme.Size(theme.SizeNameCaptionText)
+	row := container.NewHBox(label)
+	if charging {
+		bolt := canvas.NewImageFromResource(boltIcon)
+		bolt.FillMode = canvas.ImageFillContain
+		bolt.SetMinSize(fyne.NewSize(9, 12))
+		row.Add(bolt)
+	}
+	return row
 }
 
 func (t *deviceTile) Tapped(_ *fyne.PointEvent) {
@@ -92,4 +140,23 @@ func (t *deviceTile) Tapped(_ *fyne.PointEvent) {
 
 func (t *deviceTile) Cursor() desktop.Cursor {
 	return desktop.PointerCursor
+}
+
+// MouseIn/MouseOut give the card G HUB's subtle lighten-on-hover.
+func (t *deviceTile) MouseIn(_ *desktop.MouseEvent) { t.setHovered(true) }
+
+func (t *deviceTile) MouseMoved(_ *desktop.MouseEvent) {}
+
+func (t *deviceTile) MouseOut() { t.setHovered(false) }
+
+func (t *deviceTile) setHovered(hovered bool) {
+	if t.bg == nil {
+		return
+	}
+	if hovered {
+		t.bg.FillColor = colorCardHover
+	} else {
+		t.bg.FillColor = colorCard
+	}
+	t.bg.Refresh()
 }
