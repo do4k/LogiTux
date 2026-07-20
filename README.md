@@ -10,6 +10,7 @@ a Go toolchain and Fyne's usual GUI build dependencies.
 ![LogiTux's Dashboard, styled after Logitech G HUB: one dark card per connected device with a product render (original artwork, not Logitech's — see Credit), battery level, and a settings button](images/screenshot-dashboard.png)
 ![LogiTux's device page for a G Pro Wireless: product render and name in the header, then DPI and battery controls](images/screenshot-mouse.png)
 ![LogiTux's Litra Glow page: a power pill, temperature and brightness gradient sliders, and a render whose halo follows the light's state](images/screenshot-litra.png)
+![LogiTux's C922 page: zoom slider, pan/tilt position pad, and autofocus/auto-exposure pills with their manual sliders](images/screenshot-webcam.png)
 
 ## Status
 
@@ -27,6 +28,15 @@ v1 supports:
 - **PRO X Wireless Gaming Headset** — battery, sidetone, and a full
   per-band equalizer (band count/frequencies/dB range are read from the
   device, not assumed).
+- **C920 / C920 HD Pro / C922 Pro Stream / C930e** webcams — zoom,
+  pan/tilt position, autofocus and manual focus, auto and manual
+  exposure, and image tuning (brightness, contrast, saturation,
+  sharpness). Webcams aren't HID devices, so these go through a small
+  pure-Go V4L2 layer rather than hidraw; which controls exist is queried
+  from the driver per device, not assumed. Controls only — no video
+  preview yet. **Caveat:** implemented against the documented V4L2 UVC
+  control API with unit-tested ioctl marshaling, but not yet verified
+  against physical hardware, unlike everything above.
 
 The UI is styled after Logitech's own G HUB, navigation included: the
 **Dashboard** — a near-black home screen with a cyan-blue accent — shows
@@ -151,6 +161,8 @@ internal/device/         Plugin registry and capability interfaces
 internal/device/litra/   Litra Glow/Beam plugin (simple vendor HID protocol)
 internal/device/gpro/    G Pro Wireless plugin (HID++ 2.0 protocol)
 internal/device/prox/    PRO X Wireless Gaming Headset plugin (HID++ 2.0 protocol)
+internal/device/webcam/  C920/C922/C930e webcam plugin (V4L2 controls, not HID)
+internal/v4l2/           Pure-Go V4L2 control ioctls: query/get/set on /dev/videoN
 internal/config/         JSON-backed last-known-state store
 install/                 udev rules and .desktop launcher entry
 ```
@@ -165,7 +177,10 @@ specific product — it type-asserts each discovered `device.Device` against
 the capability interfaces and renders whatever controls apply. Adding a new
 device means writing a new plugin package and importing it (for its
 `init()` side effect) from `cmd/logitux/main.go`; no other files need to
-change.
+change. Hardware that doesn't live behind hidraw at all can instead
+register a whole discovery function with `device.RegisterDiscoverer` —
+that's how the webcam plugin scans `/sys/class/video4linux` for V4L2
+devices while everything else goes through the hidraw backend.
 
 Most Logitech peripherals beyond simple lights (mice, keyboards, headsets)
 speak Logitech's **HID++ 2.0** protocol: a request/response feature-call

@@ -54,6 +54,15 @@ var lightingIconSVG []byte
 //go:embed assets/sound.svg
 var soundIconSVG []byte
 
+//go:embed assets/camera.svg
+var cameraIconSVG []byte
+
+//go:embed assets/image.svg
+var imageIconSVG []byte
+
+//go:embed assets/c9xx.svg
+var webcamArtSVG []byte
+
 // Device-page section-rail icons (see buildDevicePage). Themed so Fyne
 // recolors them to match the button they sit on — foreground normally,
 // inverted on the accent-filled selected button.
@@ -62,12 +71,15 @@ var (
 	assignmentsIcon = theme.NewThemedResource(fyne.NewStaticResource("assignments.svg", assignmentsIconSVG))
 	lightingIcon    = theme.NewThemedResource(fyne.NewStaticResource("lighting.svg", lightingIconSVG))
 	soundIcon       = theme.NewThemedResource(fyne.NewStaticResource("sound.svg", soundIconSVG))
+	cameraIcon      = theme.NewThemedResource(fyne.NewStaticResource("camera.svg", cameraIconSVG))
+	imageIcon       = theme.NewThemedResource(fyne.NewStaticResource("image.svg", imageIconSVG))
 )
 
 var (
 	mouseIcon   = fyne.NewStaticResource("mouse.svg", mouseIconSVG)
 	lightIcon   = fyne.NewStaticResource("light.svg", lightIconSVG)
 	headsetIcon = fyne.NewStaticResource("headset.svg", headsetIconSVG)
+	webcamArt   = fyne.NewStaticResource("c9xx.svg", webcamArtSVG)
 	genericIcon = mouseIcon // fallback for any future device.Kind without dedicated art
 )
 
@@ -81,6 +93,11 @@ var productArtByName = map[string]fyne.Resource{
 	"Litra Glow":                    fyne.NewStaticResource("litra-glow.svg", litraGlowArtSVG),
 	"Litra Beam":                    fyne.NewStaticResource("litra-beam.svg", litraBeamArtSVG),
 	"PRO X Wireless Gaming Headset": fyne.NewStaticResource("prox.svg", proxArtSVG),
+	// The C920 family and C922 share a chassis; one render covers them.
+	"C920":            webcamArt,
+	"C920 HD Pro":     webcamArt,
+	"C922 Pro Stream": webcamArt,
+	"C930e":           webcamArt,
 }
 
 // artForDevice returns the product image to show for a device: a
@@ -159,6 +176,8 @@ func iconForKind(k device.Kind) fyne.Resource {
 		return mouseIcon
 	case device.KindHeadset:
 		return headsetIcon
+	case device.KindWebcam:
+		return webcamArt
 	default:
 		return genericIcon
 	}

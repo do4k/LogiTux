@@ -21,6 +21,7 @@ import (
 	_ "logitux/internal/device/gpro"
 	_ "logitux/internal/device/litra"
 	_ "logitux/internal/device/prox"
+	_ "logitux/internal/device/webcam"
 	"logitux/internal/hid"
 )
 

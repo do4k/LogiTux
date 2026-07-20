@@ -306,6 +306,8 @@ func deviceSections(a *appState, d device.Device, glow *lightGlow) []pageSection
 	add("assignments", assignmentsIcon, assignmentsPanel(a, d, info, serial, saved))
 	add("lighting", lightingIcon, lightingPanel(a, d, info, serial, saved, glow))
 	add("sound", soundIcon, soundPanel(a, d, info, serial, saved))
+	add("camera", cameraIcon, cameraPanel(d, info))
+	add("image", imageIcon, imagePanel(d, info))
 	return sections
 }
 
@@ -348,8 +350,9 @@ func panelValue(text string) fyne.CanvasObject {
 // labeledSlider renders a caption row with a live bold readout of the
 // current value right-aligned (G HUB-style), the slider, and the range's
 // ends labeled beneath it. onChanged receives each new value after the
-// readout has updated.
-func labeledSlider(captionText string, format func(int) string, initial, min, max, step int, onChanged func(int)) fyne.CanvasObject {
+// readout has updated. The slider is returned alongside so callers can
+// enable/disable it (e.g. a manual focus slider while autofocus is on).
+func labeledSlider(captionText string, format func(int) string, initial, min, max, step int, onChanged func(int)) (fyne.CanvasObject, *widget.Slider) {
 	value := canvas.NewText(format(initial), colorForeground)
 	value.TextStyle = fyne.TextStyle{Bold: true}
 	value.TextSize = theme.Size(theme.SizeNameText)
@@ -372,7 +375,7 @@ func labeledSlider(captionText string, format func(int) string, initial, min, ma
 		container.NewHBox(panelCaption(captionText), layout.NewSpacer(), value),
 		slider,
 		container.NewHBox(left, layout.NewSpacer(), right),
-	)
+	), slider
 }
 
 // gradientSlider is labeledSlider plus what G HUB's light sliders have:
@@ -409,11 +412,11 @@ func gradientSlider(captionText string, format func(int) string, leftLabel, righ
 	)
 }
 
-// powerPill is G HUB's "POWER [ON]" row: caption on the left, a pill
-// toggle showing the current state on the right (accent-filled while
-// on). onChanged only runs when the device accepted the change, so the
-// pill never shows a state the hardware refused.
-func powerPill(initial bool, apply func(on bool) error, onChanged func(on bool)) fyne.CanvasObject {
+// togglePill is G HUB's "POWER [ON]"-style row: caption on the left, a
+// pill toggle showing the current state on the right (accent-filled
+// while on). onChanged only runs when the device accepted the change,
+// so the pill never shows a state the hardware refused.
+func togglePill(captionText string, initial bool, apply func(on bool) error, onChanged func(on bool)) fyne.CanvasObject {
 	on := initial
 	toggle := widget.NewButton("", nil)
 	render := func() {
@@ -436,7 +439,7 @@ func powerPill(initial bool, apply func(on bool) error, onChanged func(on bool))
 		onChanged(on)
 	}
 
-	caption := container.NewVBox(layout.NewSpacer(), panelCaption("Power"), layout.NewSpacer())
+	caption := container.NewVBox(layout.NewSpacer(), panelCaption(captionText), layout.NewSpacer())
 	return container.NewHBox(caption, layout.NewSpacer(), toggle)
 }
 
@@ -466,14 +469,15 @@ func sensitivityPanel(a *appState, d device.Device, info device.Info, serial str
 		if initial <= 0 {
 			initial = min
 		}
-		body.Add(labeledSlider("DPI Speed", func(v int) string { return fmt.Sprintf("%d", v) },
+		dpiSlider, _ := labeledSlider("DPI Speed", func(v int) string { return fmt.Sprintf("%d", v) },
 			initial, min, max, step, func(dpi int) {
 				if err := dc.SetDPI(dpi); err != nil {
 					log.Printf("logitux: set DPI on %s: %v", info.Name, err)
 					return
 				}
 				a.saveState(serial, func(s *config.DeviceState) { s.DPI = dpi })
-			}))
+			})
+		body.Add(dpiSlider)
 	}
 
 	if hasRate {
@@ -599,7 +603,7 @@ func lightingPanel(a *appState, d device.Device, info device.Info, serial string
 	)
 
 	if hasPower {
-		body.Add(powerPill(saved.Power,
+		body.Add(togglePill("Power", saved.Power,
 			func(on bool) error {
 				if err := pc.SetPower(on); err != nil {
 					log.Printf("logitux: set power on %s: %v", info.Name, err)
@@ -717,14 +721,15 @@ func soundPanel(a *appState, d device.Device, info device.Info, serial string, s
 		if live, err := stc.Sidetone(); err == nil {
 			initial = live
 		}
-		body.Add(labeledSlider("Sidetone", func(v int) string { return fmt.Sprintf("%d%%", v) },
+		sidetoneSlider, _ := labeledSlider("Sidetone", func(v int) string { return fmt.Sprintf("%d%%", v) },
 			initial, 0, 100, 1, func(percent int) {
 				if err := stc.SetSidetone(percent); err != nil {
 					log.Printf("logitux: set sidetone on %s: %v", info.Name, err)
 					return
 				}
 				a.saveState(serial, func(s *config.DeviceState) { s.Sidetone = percent })
-			}))
+			})
+		body.Add(sidetoneSlider)
 	}
 
 	if hasEQ {
@@ -830,6 +835,243 @@ func equalizerShowcase(a *appState, eq device.EqualizerControl, info device.Info
 		widget.NewLabel(""),
 		container.NewCenter(reset),
 	)
+}
+
+// imageAdjustments are the CameraControlSet entries that belong on the
+// Image panel; everything else camera-shaped lives on the Camera panel.
+var imageAdjustments = map[string]bool{
+	"Brightness": true,
+	"Contrast":   true,
+	"Saturation": true,
+	"Sharpness":  true,
+}
+
+// cameraControlValue reads a control's live value, falling back to its
+// reported default if the read fails.
+func cameraControlValue(ccs device.CameraControlSet, c device.CameraControl) int {
+	if v, err := ccs.CameraControl(c.Name); err == nil {
+		return v
+	}
+	return c.Default
+}
+
+// cameraPanel covers a webcam's optics: zoom, pan/tilt (as a position
+// pad, like G HUB's), and focus and exposure with their auto toggles —
+// whichever of those the hardware reports having. Values live on the
+// device, so sliders seed from a live read.
+func cameraPanel(d device.Device, info device.Info) fyne.CanvasObject {
+	ccs, ok := d.(device.CameraControlSet)
+	if !ok {
+		return nil
+	}
+	byName := make(map[string]device.CameraControl)
+	for _, c := range ccs.CameraControls() {
+		if !imageAdjustments[c.Name] {
+			byName[c.Name] = c
+		}
+	}
+	if len(byName) == 0 {
+		return nil
+	}
+
+	set := func(name string, v int) {
+		if err := ccs.SetCameraControl(name, v); err != nil {
+			log.Printf("logitux: set %s on %s: %v", strings.ToLower(name), info.Name, err)
+		}
+	}
+
+	body := container.NewVBox(
+		panelHeading("Camera"),
+		widget.NewLabel(""),
+	)
+
+	if c, ok := byName["Zoom"]; ok {
+		// UVC zoom is already expressed as a percentage (100 = no zoom).
+		zoom, _ := labeledSlider("Zoom", func(v int) string { return fmt.Sprintf("%d%%", v) },
+			cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) { set("Zoom", v) })
+		body.Add(zoom)
+		body.Add(widget.NewLabel(""))
+	}
+
+	pan, hasPan := byName["Pan"]
+	tilt, hasTilt := byName["Tilt"]
+	if hasPan && hasTilt {
+		body.Add(panelCaption("Position"))
+		body.Add(container.NewCenter(positionPad(ccs, info, pan, tilt)))
+		body.Add(widget.NewLabel(""))
+	}
+
+	if c, ok := byName["Focus"]; ok || byName["Auto Focus"].Name != "" {
+		var focusSlider *widget.Slider
+		var focusRow fyne.CanvasObject
+		if ok {
+			focusRow, focusSlider = labeledSlider("Focus", func(v int) string { return fmt.Sprintf("%d", v) },
+				cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) { set("Focus", v) })
+		}
+		if af, hasAF := byName["Auto Focus"]; hasAF {
+			afOn := cameraControlValue(ccs, af) == 1
+			if focusSlider != nil && afOn {
+				focusSlider.Disable()
+			}
+			body.Add(togglePill("Auto Focus", afOn,
+				func(on bool) error {
+					v := 0
+					if on {
+						v = 1
+					}
+					if err := ccs.SetCameraControl("Auto Focus", v); err != nil {
+						log.Printf("logitux: set auto focus on %s: %v", info.Name, err)
+						return err
+					}
+					return nil
+				},
+				func(on bool) {
+					if focusSlider == nil {
+						return
+					}
+					if on {
+						focusSlider.Disable()
+					} else {
+						focusSlider.Enable()
+					}
+				}))
+		}
+		if focusRow != nil {
+			body.Add(focusRow)
+		}
+		body.Add(widget.NewLabel(""))
+	}
+
+	if c, hasExp := byName["Exposure"]; hasExp || byName["Auto Exposure"].Name != "" {
+		var expSlider *widget.Slider
+		var expRow fyne.CanvasObject
+		if hasExp {
+			expRow, expSlider = labeledSlider("Exposure", func(v int) string { return fmt.Sprintf("%d", v) },
+				cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) { set("Exposure", v) })
+		}
+		if ae, hasAE := byName["Auto Exposure"]; hasAE {
+			aeOn := cameraControlValue(ccs, ae) == 1
+			if expSlider != nil && aeOn {
+				expSlider.Disable()
+			}
+			body.Add(togglePill("Auto Exposure", aeOn,
+				func(on bool) error {
+					v := 0
+					if on {
+						v = 1
+					}
+					if err := ccs.SetCameraControl("Auto Exposure", v); err != nil {
+						log.Printf("logitux: set auto exposure on %s: %v", info.Name, err)
+						return err
+					}
+					return nil
+				},
+				func(on bool) {
+					if expSlider == nil {
+						return
+					}
+					if on {
+						expSlider.Disable()
+					} else {
+						expSlider.Enable()
+					}
+				}))
+		}
+		if expRow != nil {
+			body.Add(expRow)
+		}
+	}
+
+	return body
+}
+
+// positionPad is G HUB's pan/tilt control: four arrows nudging the view
+// by one hardware step, and a center button recentering both axes. The
+// current pan/tilt are tracked locally (seeded from a live read) rather
+// than re-read per tap.
+func positionPad(ccs device.CameraControlSet, info device.Info, pan, tilt device.CameraControl) fyne.CanvasObject {
+	panValue := cameraControlValue(ccs, pan)
+	tiltValue := cameraControlValue(ccs, tilt)
+
+	clamp := func(v, min, max int) int {
+		if v < min {
+			return min
+		}
+		if v > max {
+			return max
+		}
+		return v
+	}
+	set := func(name string, v int) bool {
+		if err := ccs.SetCameraControl(name, v); err != nil {
+			log.Printf("logitux: set %s on %s: %v", strings.ToLower(name), info.Name, err)
+			return false
+		}
+		return true
+	}
+
+	nudge := func(name string, current *int, delta, min, max int) func() {
+		return func() {
+			v := clamp(*current+delta, min, max)
+			if v != *current && set(name, v) {
+				*current = v
+			}
+		}
+	}
+
+	up := widget.NewButtonWithIcon("", theme.MoveUpIcon(), nudge("Tilt", &tiltValue, tilt.Step, tilt.Min, tilt.Max))
+	down := widget.NewButtonWithIcon("", theme.MoveDownIcon(), nudge("Tilt", &tiltValue, -tilt.Step, tilt.Min, tilt.Max))
+	right := widget.NewButtonWithIcon("", theme.NavigateNextIcon(), nudge("Pan", &panValue, pan.Step, pan.Min, pan.Max))
+	left := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), nudge("Pan", &panValue, -pan.Step, pan.Min, pan.Max))
+	center := widget.NewButtonWithIcon("", theme.MediaRecordIcon(), func() {
+		if set("Pan", 0) {
+			panValue = 0
+		}
+		if set("Tilt", 0) {
+			tiltValue = 0
+		}
+	})
+
+	blank := func() fyne.CanvasObject { return layout.NewSpacer() }
+	return container.NewGridWithColumns(3,
+		blank(), up, blank(),
+		left, center, right,
+		blank(), down, blank(),
+	)
+}
+
+// imagePanel covers a webcam's picture tuning (brightness, contrast,
+// saturation, sharpness), or nil if the device reports none of them.
+func imagePanel(d device.Device, info device.Info) fyne.CanvasObject {
+	ccs, ok := d.(device.CameraControlSet)
+	if !ok {
+		return nil
+	}
+
+	body := container.NewVBox(
+		panelHeading("Image"),
+		widget.NewLabel(""),
+	)
+	found := false
+	for _, c := range ccs.CameraControls() {
+		if !imageAdjustments[c.Name] {
+			continue
+		}
+		c := c
+		row, _ := labeledSlider(c.Name, func(v int) string { return fmt.Sprintf("%d", v) },
+			cameraControlValue(ccs, c), c.Min, c.Max, c.Step, func(v int) {
+				if err := ccs.SetCameraControl(c.Name, v); err != nil {
+					log.Printf("logitux: set %s on %s: %v", strings.ToLower(c.Name), info.Name, err)
+				}
+			})
+		body.Add(row)
+		body.Add(widget.NewLabel(""))
+		found = true
+	}
+	if !found {
+		return nil
+	}
+	return body
 }
 
 // formatFrequency renders a band frequency compactly, e.g. 125 -> "125Hz",

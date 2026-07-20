@@ -48,6 +48,7 @@ func TestGeneratePreview(t *testing.T) {
 		&fakeLightDevice{fakeDevice{info: device.Info{Name: "Litra Glow", Kind: device.KindLight, Serial: "D4E5F6"}}},
 		&fakeDevice{info: device.Info{Name: "Litra Beam", Kind: device.KindLight, Serial: "D4E5F7"}},
 		&fakeHeadsetDevice{fakeDevice{info: device.Info{Name: "PRO X Wireless Gaming Headset", Kind: device.KindHeadset, Serial: "G7H8I9"}, percent: 44}},
+		&fakeWebcamDevice{fakeDevice: fakeDevice{info: device.Info{Name: "C922 Pro Stream", Kind: device.KindWebcam, Serial: "J1K2L3"}}, values: map[string]int{"Zoom": 130}},
 	}
 
 	store, err := config.Open(filepath.Join(t.TempDir(), "state.json"))
@@ -80,6 +81,11 @@ func TestGeneratePreview(t *testing.T) {
 	w4 := test.NewWindow(buildMainView(state, devices))
 	w4.Resize(fyne.NewSize(980, 620))
 	save(t, w4.Canvas().Capture(), "preview-headset.png")
+
+	state.selectedSerial = devices[4].Info().Serial
+	w5 := test.NewWindow(buildMainView(state, devices))
+	w5.Resize(fyne.NewSize(980, 620))
+	save(t, w5.Canvas().Capture(), "preview-webcam.png")
 }
 
 func (f *fakeLightDevice) SetPower(bool) error          { return nil }
@@ -104,6 +110,47 @@ func (f *fakeHeadsetDevice) EqualizerLevels() ([]int, error) {
 	return []int{0, 0, 0, 2, 4, 6, 6, 7, 7, 7}, nil
 }
 func (f *fakeHeadsetDevice) SetEqualizerLevels([]int) error { return nil }
+
+type fakeWebcamDevice struct {
+	fakeDevice
+	values map[string]int
+}
+
+func (f *fakeWebcamDevice) CameraControls() []device.CameraControl {
+	return []device.CameraControl{
+		{Name: "Zoom", Min: 100, Max: 500, Step: 1, Default: 100},
+		{Name: "Pan", Min: -36000, Max: 36000, Step: 3600},
+		{Name: "Tilt", Min: -36000, Max: 36000, Step: 3600},
+		{Name: "Auto Focus", Min: 0, Max: 1, Step: 1, Default: 1},
+		{Name: "Focus", Min: 0, Max: 250, Step: 5},
+		{Name: "Auto Exposure", Min: 0, Max: 1, Step: 1, Default: 1},
+		{Name: "Exposure", Min: 3, Max: 2047, Step: 1, Default: 250},
+		{Name: "Brightness", Min: 0, Max: 255, Step: 1, Default: 128},
+		{Name: "Contrast", Min: 0, Max: 255, Step: 1, Default: 128},
+		{Name: "Saturation", Min: 0, Max: 255, Step: 1, Default: 128},
+		{Name: "Sharpness", Min: 0, Max: 255, Step: 1, Default: 128},
+	}
+}
+
+func (f *fakeWebcamDevice) CameraControl(name string) (int, error) {
+	if v, ok := f.values[name]; ok {
+		return v, nil
+	}
+	for _, c := range f.CameraControls() {
+		if c.Name == name {
+			return c.Default, nil
+		}
+	}
+	return 0, nil
+}
+
+func (f *fakeWebcamDevice) SetCameraControl(name string, value int) error {
+	if f.values == nil {
+		f.values = map[string]int{}
+	}
+	f.values[name] = value
+	return nil
+}
 
 func (f *fakeBattDevice) DPIRange() (int, int, int)    { return 100, 25600, 50 }
 func (f *fakeBattDevice) SetDPI(int) error             { return nil }

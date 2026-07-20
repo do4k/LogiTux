@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 200">
+  <defs>
+    <linearGradient id="camshell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34343a"/>
+      <stop offset="1" stop-color="#1f1f23"/>
+    </linearGradient>
+    <radialGradient id="glass" cx="0.4" cy="0.35" r="0.9">
+      <stop offset="0" stop-color="#2c4468"/>
+      <stop offset="0.6" stop-color="#16233a"/>
+      <stop offset="1" stop-color="#0b111c"/>
+    </radialGradient>
+  </defs>
+
+  <!-- fold-out clip mount -->
+  <rect x="94" y="120" width="32" height="20" rx="5" fill="#1d1d21" stroke="#3a3a40" stroke-width="1.5"/>
+  <rect x="82" y="136" width="56" height="30" rx="8" fill="#202024" stroke="#3a3a40" stroke-width="1.5"/>
+
+  <!-- body -->
+  <rect x="26" y="52" width="168" height="76" rx="26" fill="url(#camshell)" stroke="#45454c" stroke-width="1.5"/>
+
+  <!-- microphone grilles -->
+  <g fill="#141417">
+    <circle cx="46" cy="78" r="2"/><circle cx="56" cy="78" r="2"/><circle cx="66" cy="78" r="2"/>
+    <circle cx="46" cy="90" r="2"/><circle cx="56" cy="90" r="2"/><circle cx="66" cy="90" r="2"/>
+    <circle cx="46" cy="102" r="2"/><circle cx="56" cy="102" r="2"/><circle cx="66" cy="102" r="2"/>
+    <circle cx="154" cy="78" r="2"/><circle cx="164" cy="78" r="2"/><circle cx="174" cy="78" r="2"/>
+    <circle cx="154" cy="90" r="2"/><circle cx="164" cy="90" r="2"/><circle cx="174" cy="90" r="2"/>
+    <circle cx="154" cy="102" r="2"/><circle cx="164" cy="102" r="2"/><circle cx="174" cy="102" r="2"/>
+  </g>
+
+  <!-- lens -->
+  <circle cx="110" cy="90" r="31" fill="#131316" stroke="#45454c" stroke-width="1.5"/>
+  <circle cx="110" cy="90" r="22" fill="#1a1a1e" stroke="#3a3a40" stroke-width="1.5"/>
+  <circle cx="110" cy="90" r="14" fill="url(#glass)"/>
+  <circle cx="104" cy="84" r="4" fill="#4a6a96" opacity="0.7"/>
+
+  <!-- status LED -->
+  <circle cx="140" cy="66" r="2.5" fill="#2e2e33"/>
+</svg>
