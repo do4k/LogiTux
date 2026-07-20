@@ -34,12 +34,15 @@ battery level if it has one — a bolt marks charging, and a settings
 button); clicking one opens that device's page with its full controls,
 and the back arrow in the page's top-left returns to the Dashboard. A
 device's page only exists while it's actually connected — unplugging
-drops you back on the Dashboard. Each page keeps the one or
-two settings you're likely to adjust often (power, brightness/DPI,
-battery) directly visible, with everything else — color temperature,
-report rate, RGB, button remapping, sidetone, the equalizer — tucked under
-a collapsed "Advanced" section, which stays expanded or collapsed across
-LogiTux's periodic re-polling rather than snapping shut on you. A system
+drops you back on the Dashboard. Device pages are laid out like G HUB's:
+an icon rail on the left groups the device's settings into sections —
+Sensitivity (DPI, report rate), Assignments (button remapping), Lighting
+(power, brightness, color temperature, RGB logo color), and Sound
+(sidetone, equalizer) — and only the sections a device actually supports
+appear. The panel beside the rail holds the selected section's controls,
+and the rest of the page shows the battery level and a large product
+render. The selected section sticks across LogiTux's periodic re-polling
+rather than snapping back to the first every few seconds. A system
 tray icon offers quick per-device actions (power, DPI presets) without
 opening the window.
 

@@ -52,7 +52,7 @@ func TestGeneratePreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := &appState{store: store, advancedOpen: map[string]bool{}}
+	state := &appState{store: store, pageSection: map[string]string{}}
 
 	w := test.NewWindow(buildMainView(state, devices))
 	w.Resize(fyne.NewSize(980, 620))
@@ -64,12 +64,17 @@ func TestGeneratePreview(t *testing.T) {
 	save(t, w2.Canvas().Capture(), "preview-device.png")
 }
 
-func (f *fakeBattDevice) DPIRange() (int, int, int) { return 100, 25600, 50 }
-func (f *fakeBattDevice) SetDPI(int) error          { return nil }
-func (f *fakeBattDevice) DPI() (int, error)         { return 1600, nil }
-func (f *fakeBattDevice) ReportRateOptions() []int  { return []int{125, 250, 500, 1000} }
-func (f *fakeBattDevice) SetReportRate(int) error   { return nil }
-func (f *fakeBattDevice) ReportRate() (int, error)  { return 1000, nil }
+func (f *fakeBattDevice) DPIRange() (int, int, int)    { return 100, 25600, 50 }
+func (f *fakeBattDevice) SetDPI(int) error             { return nil }
+func (f *fakeBattDevice) DPI() (int, error)            { return 1600, nil }
+func (f *fakeBattDevice) ReportRateOptions() []int     { return []int{125, 250, 500, 1000} }
+func (f *fakeBattDevice) SetReportRate(int) error      { return nil }
+func (f *fakeBattDevice) ReportRate() (int, error)     { return 1000, nil }
+func (f *fakeBattDevice) SetColor(r, g, b uint8) error { return nil }
+func (f *fakeBattDevice) Buttons() ([]device.ButtonInfo, error) {
+	return []device.ButtonInfo{{ID: 1, Name: "Back Button"}, {ID: 2, Name: "Forward Button"}}, nil
+}
+func (f *fakeBattDevice) RemapButton(uint16, uint16) error { return nil }
 
 func save(t *testing.T, img image.Image, name string) {
 	t.Helper()

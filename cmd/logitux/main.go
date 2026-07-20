@@ -53,12 +53,12 @@ type appState struct {
 	// lock, unlike current above.
 	selectedSerial string
 
-	// advancedOpen remembers, per device serial, whether that device
-	// card's "Advanced" section is expanded. Device cards are rebuilt
-	// from scratch on every refresh tick, which would otherwise silently
-	// re-collapse an open section out from under the user; same
-	// no-lock-needed reasoning as selectedTab.
-	advancedOpen map[string]bool
+	// pageSection remembers, per device serial, which section of that
+	// device's page (sensitivity/assignments/lighting/sound) is selected.
+	// Pages are rebuilt from scratch on every refresh tick, which would
+	// otherwise silently snap back to the first section out from under
+	// the user; same no-lock-needed reasoning as selectedSerial.
+	pageSection map[string]string
 }
 
 func main() {
@@ -87,12 +87,12 @@ func main() {
 	window.Resize(fyne.NewSize(980, 620))
 
 	state := &appState{
-		fyneApp:      a,
-		window:       window,
-		backend:      hid.Default,
-		store:        store,
-		current:      make(map[string]device.Device),
-		advancedOpen: make(map[string]bool),
+		fyneApp:     a,
+		window:      window,
+		backend:     hid.Default,
+		store:       store,
+		current:     make(map[string]device.Device),
+		pageSection: make(map[string]string),
 	}
 
 	setUpSystemTray(state)

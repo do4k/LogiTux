@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/theme"
 
 	"logitux/internal/device"
 )
@@ -40,6 +41,28 @@ var boltIconSVG []byte
 // rather than the "⚡" character because the bundled font has no glyph
 // for it — it silently renders as nothing.
 var boltIcon = fyne.NewStaticResource("bolt.svg", boltIconSVG)
+
+//go:embed assets/sensitivity.svg
+var sensitivityIconSVG []byte
+
+//go:embed assets/assignments.svg
+var assignmentsIconSVG []byte
+
+//go:embed assets/lighting.svg
+var lightingIconSVG []byte
+
+//go:embed assets/sound.svg
+var soundIconSVG []byte
+
+// Device-page section-rail icons (see buildDevicePage). Themed so Fyne
+// recolors them to match the button they sit on — foreground normally,
+// inverted on the accent-filled selected button.
+var (
+	sensitivityIcon = theme.NewThemedResource(fyne.NewStaticResource("sensitivity.svg", sensitivityIconSVG))
+	assignmentsIcon = theme.NewThemedResource(fyne.NewStaticResource("assignments.svg", assignmentsIconSVG))
+	lightingIcon    = theme.NewThemedResource(fyne.NewStaticResource("lighting.svg", lightingIconSVG))
+	soundIcon       = theme.NewThemedResource(fyne.NewStaticResource("sound.svg", soundIconSVG))
+)
 
 var (
 	mouseIcon   = fyne.NewStaticResource("mouse.svg", mouseIconSVG)

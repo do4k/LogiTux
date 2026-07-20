@@ -32,7 +32,12 @@ func (ghubTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Colo
 		return colorBackground
 	case theme.ColorNameForeground:
 		return colorForeground
-	case theme.ColorNameInputBackground, theme.ColorNameMenuBackground, theme.ColorNameOverlayBackground:
+	case theme.ColorNameInputBackground:
+		// A step lighter than colorCard: sliders draw their track and
+		// inputs their field with this, and panels/cards are colorCard —
+		// identical values would make tracks invisible on them.
+		return color.NRGBA{R: 0x2e, G: 0x2e, B: 0x33, A: 0xff}
+	case theme.ColorNameMenuBackground, theme.ColorNameOverlayBackground:
 		return colorCard
 	case theme.ColorNameButton:
 		return colorButton
