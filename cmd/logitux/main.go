@@ -79,8 +79,9 @@ func main() {
 
 	a := app.NewWithID("io.github.logitux")
 	a.SetIcon(theme.FyneLogo())
+	a.Settings().SetTheme(ghubTheme{})
 	window := a.NewWindow("LogiTux")
-	window.Resize(fyne.NewSize(420, 480))
+	window.Resize(fyne.NewSize(980, 620))
 
 	state := &appState{
 		fyneApp:      a,

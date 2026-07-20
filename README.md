@@ -7,8 +7,8 @@ LogiTux talks to hardware directly over Linux's `hidraw` interface (no
 `libhidapi` dependency, no cgo for device I/O), so installation only needs
 a Go toolchain and Fyne's usual GUI build dependencies.
 
-![LogiTux's Dashboard tab: one tile per connected device, with an original icon (not vendor artwork — see Credit) for each device kind](images/screenshot-dashboard.png)
-![LogiTux showing a connected G Pro Wireless: DPI, report rate, battery, and logo color](images/screenshot-mouse.png)
+![LogiTux's Dashboard tab, styled after Logitech G HUB: one dark card per connected device with a product render (original artwork, not Logitech's — see Credit), battery level, and a settings button](images/screenshot-dashboard.png)
+![LogiTux's device page for a G Pro Wireless: product render and name in the header, then DPI and battery controls](images/screenshot-mouse.png)
 
 ## Status
 
@@ -27,8 +27,10 @@ v1 supports:
   per-band equalizer (band count/frequencies/dB range are read from the
   device, not assumed).
 
-A **Dashboard** tab shows every connected device as a clickable tile
-(icon, name, battery level if it has one — a bolt marks charging);
+The UI is styled after Logitech's own G HUB: a near-black theme with a
+cyan-blue accent, and a **Dashboard** tab that shows every connected
+device as a clickable G HUB-style card (product render, name, battery
+level if it has one — a bolt marks charging, and a settings button);
 clicking one jumps to its own tab with full controls. Device tabs only
 exist while that device is actually connected. Each tab keeps the one or
 two settings you're likely to adjust often (power, brightness/DPI,
@@ -93,6 +95,20 @@ light that's currently off, for example. Button remaps are the one
 exception (see below): they're re-applied automatically whenever a mouse
 reconnects, since a remap that silently stopped working every time the app
 restarted would defeat the point of the feature.
+
+### Custom product images
+
+Each supported product ships with an original render drawn for LogiTux
+(Logitech's own product photography is copyrighted, so an MIT-licensed
+project can't redistribute it). If you'd rather see the official images,
+you can supply your own: drop a file into
+`$XDG_CONFIG_HOME/logitux/images/` (typically `~/.config/logitux/images/`)
+named after the product — lowercased, spaces as dashes — with a `.png`,
+`.jpg`, `.jpeg`, or `.svg` extension, e.g. `g-pro-wireless.png`,
+`litra-glow.png`, or `pro-x-wireless-gaming-headset.png`. LogiTux picks
+these up at startup and uses them everywhere the built-in render would
+appear. Such images are for your own local use; don't commit them to a
+public fork.
 
 ### Button remapping
 
@@ -164,6 +180,11 @@ make run     # build and run
 ```
 
 ## Credit
+
+All product artwork in LogiTux (the dashboard renders and generic device
+icons) is original, drawn for this project; none of it is Logitech's
+imagery. "Logitech", "G HUB", and the product names are Logitech
+trademarks, used here only to identify the hardware being controlled.
 
 The Litra USB protocol was originally reverse-engineered by
 [kharyam/go-litra-driver](https://github.com/kharyam/go-litra-driver) (and

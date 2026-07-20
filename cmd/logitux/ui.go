@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"logitux/internal/config"
@@ -102,13 +105,28 @@ func buildDeviceCard(a *appState, d device.Device) fyne.CanvasObject {
 	saved, _ := a.store.Get(serial)
 
 	main := container.NewVBox()
+
+	// G HUB-style page header: product render beside a bold uppercase
+	// name, so the device page matches the dashboard card that opened it.
+	thumb := canvas.NewImageFromResource(artForDevice(info))
+	thumb.FillMode = canvas.ImageFillContain
+	thumb.SetMinSize(fyne.NewSize(96, 84))
+	title := canvas.NewText(strings.ToUpper(info.Name), colorForeground)
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	title.TextSize = theme.Size(theme.SizeNameSubHeadingText)
+	headerText := container.NewVBox(layout.NewSpacer(), title)
 	if serial != "" {
 		// Some devices have no USB serial descriptor and nothing else to
 		// derive one from (e.g. this PRO X Wireless's dongle); nothing
 		// useful to show in that case, so the row is omitted rather than
 		// left dangling as "Serial: ".
-		main.Add(widget.NewLabel(fmt.Sprintf("Serial: %s", serial)))
+		sub := canvas.NewText("Serial: "+serial, colorSecondary)
+		sub.TextSize = theme.Size(theme.SizeNameCaptionText)
+		headerText.Add(sub)
 	}
+	headerText.Add(layout.NewSpacer())
+	main.Add(container.NewHBox(thumb, headerText))
+	main.Add(widget.NewSeparator())
 	var advanced []fyne.CanvasObject
 	addAdvanced := func(items ...fyne.CanvasObject) { advanced = append(advanced, items...) }
 
