@@ -34,6 +34,8 @@ type fakeBattDevice struct{ fakeDevice }
 
 func (f *fakeBattDevice) Battery() (int, bool, error) { return f.percent, f.charging, nil }
 
+type fakeLightDevice struct{ fakeDevice }
+
 func TestGeneratePreview(t *testing.T) {
 	if os.Getenv("LOGITUX_PREVIEW") == "" {
 		t.Skip("preview generation only")
@@ -43,7 +45,7 @@ func TestGeneratePreview(t *testing.T) {
 
 	devices := []device.Device{
 		&fakeBattDevice{fakeDevice{info: device.Info{Name: "G Pro Wireless", Kind: device.KindMouse, Serial: "A1B2C3"}, percent: 93, charging: true}},
-		&fakeDevice{info: device.Info{Name: "Litra Glow", Kind: device.KindLight, Serial: "D4E5F6"}},
+		&fakeLightDevice{fakeDevice{info: device.Info{Name: "Litra Glow", Kind: device.KindLight, Serial: "D4E5F6"}}},
 		&fakeDevice{info: device.Info{Name: "Litra Beam", Kind: device.KindLight, Serial: "D4E5F7"}},
 		&fakeBattDevice{fakeDevice{info: device.Info{Name: "PRO X Wireless Gaming Headset", Kind: device.KindHeadset, Serial: "G7H8I9"}, percent: 44}},
 	}
@@ -62,7 +64,23 @@ func TestGeneratePreview(t *testing.T) {
 	w2 := test.NewWindow(buildMainView(state, devices))
 	w2.Resize(fyne.NewSize(980, 620))
 	save(t, w2.Canvas().Capture(), "preview-device.png")
+
+	// Litra page, with saved state so the power pill reads ON and the
+	// showcase halo is lit.
+	litra := devices[1]
+	if err := store.Set(litra.Info().Serial, config.DeviceState{Power: true, Brightness: 65, Temperature: 5000}); err != nil {
+		t.Fatal(err)
+	}
+	state.selectedSerial = litra.Info().Serial
+	w3 := test.NewWindow(buildMainView(state, devices))
+	w3.Resize(fyne.NewSize(980, 620))
+	save(t, w3.Canvas().Capture(), "preview-litra.png")
 }
+
+func (f *fakeLightDevice) SetPower(bool) error          { return nil }
+func (f *fakeLightDevice) SetBrightness(int) error      { return nil }
+func (f *fakeLightDevice) SetTemperature(int) error     { return nil }
+func (f *fakeLightDevice) TemperatureRange() (int, int) { return 2700, 6500 }
 
 func (f *fakeBattDevice) DPIRange() (int, int, int)    { return 100, 25600, 50 }
 func (f *fakeBattDevice) SetDPI(int) error             { return nil }

@@ -85,8 +85,17 @@ func buildDevicePage(a *appState, devices []device.Device, d device.Device) fyne
 	title.TextSize = theme.Size(theme.SizeNameSubHeadingText)
 	topBar := container.NewHBox(back, container.NewPadded(title))
 
-	showcase := deviceShowcase(d)
-	sections := deviceSections(a, d)
+	// Lights get a halo behind their showcase render that tracks the
+	// power/brightness/temperature controls live, like G HUB's Litra
+	// page, where the render actually glows.
+	var glow *lightGlow
+	if info.Kind == device.KindLight {
+		saved, _ := a.store.Get(info.Serial)
+		glow = newLightGlow(saved)
+	}
+
+	showcase := deviceShowcase(d, glow)
+	sections := deviceSections(a, d, glow)
 	if len(sections) == 0 {
 		return container.NewBorder(topBar, nil, nil, nil, showcase)
 	}
@@ -128,10 +137,93 @@ func buildDevicePage(a *appState, devices []device.Device, d device.Device) fyne
 	return container.NewBorder(topBar, nil, nil, nil, container.NewPadded(content))
 }
 
+// lightGlow is the halo behind a light's showcase render. The lighting
+// panel's controls update it as the user adjusts them, so the render
+// reflects the light's actual state: off means no halo, and the halo's
+// tint and strength follow color temperature and brightness.
+type lightGlow struct {
+	gradient   *canvas.RadialGradient
+	on         bool
+	brightness int
+	kelvin     int
+}
+
+func newLightGlow(saved config.DeviceState) *lightGlow {
+	g := &lightGlow{
+		gradient:   canvas.NewRadialGradient(color.Transparent, color.Transparent),
+		on:         saved.Power,
+		brightness: saved.Brightness,
+		kelvin:     saved.Temperature,
+	}
+	// Same defaults the panel's widgets seed with, so halo and controls
+	// agree before the user touches anything.
+	if g.brightness <= 0 {
+		g.brightness = 50
+	}
+	if g.kelvin <= 0 {
+		g.kelvin = (minLitraKelvin + maxLitraKelvin) / 2
+	}
+	g.apply()
+	return g
+}
+
+func (g *lightGlow) apply() {
+	if g.on {
+		// Halfway between the Kelvin tint and pure white: a raw warm/cool
+		// tint over the black background reads gray, not glowing.
+		c := kelvinColor(g.kelvin)
+		c.R += (0xff - c.R) / 2
+		c.G += (0xff - c.G) / 2
+		c.B += (0xff - c.B) / 2
+		c.A = uint8(0x24 + g.brightness*0x8c/100)
+		g.gradient.StartColor = c
+	} else {
+		g.gradient.StartColor = color.NRGBA{}
+	}
+	g.gradient.Refresh()
+}
+
+func (g *lightGlow) setPower(on bool)          { g.on = on; g.apply() }
+func (g *lightGlow) setBrightness(pct int)     { g.brightness = pct; g.apply() }
+func (g *lightGlow) setTemperature(kelvin int) { g.kelvin = kelvin; g.apply() }
+
+// The Litra range; kelvinColor interpolates across it. Fine for other
+// future lights too — tints outside it just clamp to the endpoints.
+const (
+	minLitraKelvin = 2700
+	maxLitraKelvin = 6500
+)
+
+var (
+	warmColor = color.NRGBA{R: 0xff, G: 0xc2, B: 0x70, A: 0xff} // ~2700K
+	coolColor = color.NRGBA{R: 0xcf, G: 0xe2, B: 0xff, A: 0xff} // ~6500K
+)
+
+// kelvinColor approximates a color temperature as an RGB tint by
+// interpolating between a warm and a cool endpoint — plenty for a UI
+// halo; nobody is color-grading against it.
+func kelvinColor(kelvin int) color.NRGBA {
+	t := float64(kelvin-minLitraKelvin) / float64(maxLitraKelvin-minLitraKelvin)
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	lerp := func(a, b uint8) uint8 { return uint8(float64(a) + t*(float64(b)-float64(a))) }
+	return color.NRGBA{
+		R: lerp(warmColor.R, coolColor.R),
+		G: lerp(warmColor.G, coolColor.G),
+		B: lerp(warmColor.B, coolColor.B),
+		A: 0xff,
+	}
+}
+
 // deviceShowcase fills a device page's main area, G HUB-style: battery
 // level (and serial) in the top-left corner, and a large product render
-// under a faded oversized product name.
-func deviceShowcase(d device.Device) fyne.CanvasObject {
+// under a faded oversized product name. glow, non-nil only for lights,
+// is layered behind the render.
+func deviceShowcase(d device.Device, glow *lightGlow) fyne.CanvasObject {
 	info := d.Info()
 
 	var infoRows []fyne.CanvasObject
@@ -165,10 +257,16 @@ func deviceShowcase(d device.Device) fyne.CanvasObject {
 	art.FillMode = canvas.ImageFillContain
 	art.SetMinSize(fyne.NewSize(340, 300))
 
+	render := fyne.CanvasObject(art)
+	if glow != nil {
+		glow.gradient.SetMinSize(fyne.NewSize(400, 360))
+		render = container.NewStack(glow.gradient, container.NewCenter(art))
+	}
+
 	center := container.NewVBox(
 		layout.NewSpacer(),
 		container.NewCenter(ghost),
-		container.NewCenter(art),
+		container.NewCenter(render),
 		layout.NewSpacer(),
 	)
 	return container.NewStack(center, corner)
@@ -180,7 +278,7 @@ func deviceShowcase(d device.Device) fyne.CanvasObject {
 // are set directly on the widget fields — not via SetValue/SetChecked —
 // so seeding the UI never sends a command to the device before the user
 // interacts with it.
-func deviceSections(a *appState, d device.Device) []pageSection {
+func deviceSections(a *appState, d device.Device, glow *lightGlow) []pageSection {
 	info := d.Info()
 	serial := info.Serial
 	saved, _ := a.store.Get(serial)
@@ -193,7 +291,7 @@ func deviceSections(a *appState, d device.Device) []pageSection {
 	}
 	add("sensitivity", sensitivityIcon, sensitivityPanel(a, d, info, serial, saved))
 	add("assignments", assignmentsIcon, assignmentsPanel(a, d, info, serial, saved))
-	add("lighting", lightingIcon, lightingPanel(a, d, info, serial, saved))
+	add("lighting", lightingIcon, lightingPanel(a, d, info, serial, saved, glow))
 	add("sound", soundIcon, soundPanel(a, d, info, serial, saved))
 	return sections
 }
@@ -251,6 +349,71 @@ func labeledSlider(captionText string, format func(int) string, initial, min, ma
 		onChanged(int(v))
 	}
 	return container.NewVBox(panelCaption(captionText), value, slider)
+}
+
+// gradientSlider is labeledSlider plus what G HUB's light sliders have:
+// a gradient strip under the track previewing what the ends mean, with
+// end labels (e.g. "Cool" ... "Warm"). The current value still gets a
+// bold readout, right-aligned on the caption row.
+func gradientSlider(captionText string, format func(int) string, leftLabel, rightLabel string, start, end color.Color, initial, min, max, step int, onChanged func(int)) fyne.CanvasObject {
+	value := canvas.NewText(format(initial), colorForeground)
+	value.TextStyle = fyne.TextStyle{Bold: true}
+	value.TextSize = theme.Size(theme.SizeNameText)
+
+	slider := widget.NewSlider(float64(min), float64(max))
+	slider.Value = float64(initial)
+	slider.Step = float64(step)
+	slider.OnChanged = func(v float64) {
+		value.Text = format(int(v))
+		value.Refresh()
+		onChanged(int(v))
+	}
+
+	strip := canvas.NewHorizontalGradient(start, end)
+	strip.SetMinSize(fyne.NewSize(0, 5))
+
+	left := canvas.NewText(leftLabel, colorSecondary)
+	left.TextSize = theme.Size(theme.SizeNameCaptionText)
+	right := canvas.NewText(rightLabel, colorSecondary)
+	right.TextSize = theme.Size(theme.SizeNameCaptionText)
+
+	return container.NewVBox(
+		container.NewHBox(panelCaption(captionText), layout.NewSpacer(), value),
+		slider,
+		strip,
+		container.NewHBox(left, layout.NewSpacer(), right),
+	)
+}
+
+// powerPill is G HUB's "POWER [ON]" row: caption on the left, a pill
+// toggle showing the current state on the right (accent-filled while
+// on). onChanged only runs when the device accepted the change, so the
+// pill never shows a state the hardware refused.
+func powerPill(initial bool, apply func(on bool) error, onChanged func(on bool)) fyne.CanvasObject {
+	on := initial
+	toggle := widget.NewButton("", nil)
+	render := func() {
+		if on {
+			toggle.SetText("ON")
+			toggle.Importance = widget.HighImportance
+		} else {
+			toggle.SetText("OFF")
+			toggle.Importance = widget.MediumImportance
+		}
+		toggle.Refresh()
+	}
+	render()
+	toggle.OnTapped = func() {
+		if err := apply(!on); err != nil {
+			return // logged by the caller's apply; keep showing the real state
+		}
+		on = !on
+		render()
+		onChanged(on)
+	}
+
+	caption := container.NewVBox(layout.NewSpacer(), panelCaption("Power"), layout.NewSpacer())
+	return container.NewHBox(caption, layout.NewSpacer(), toggle)
 }
 
 // --- capability panels -----------------------------------------------------
@@ -388,10 +551,12 @@ func assignmentsPanel(a *appState, d device.Device, info device.Info, serial str
 	return body
 }
 
-// lightingPanel covers the light-shaped capabilities: power, brightness,
-// and color temperature (Litra lights), and RGB logo color (mice). Nil
-// if the device has none of them.
-func lightingPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState) fyne.CanvasObject {
+// lightingPanel covers the light-shaped capabilities: power, color
+// temperature, and brightness (Litra lights, laid out in G HUB's order
+// with its gradient sliders), and RGB logo color (mice). Nil if the
+// device has none of them. glow (non-nil only for lights) is kept in
+// sync so the showcase render reflects each change.
+func lightingPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState, glow *lightGlow) fyne.CanvasObject {
 	pc, hasPower := d.(device.PowerControl)
 	bc, hasBrightness := d.(device.BrightnessControl)
 	tc, hasTemperature := d.(device.TemperatureControl)
@@ -400,37 +565,31 @@ func lightingPanel(a *appState, d device.Device, info device.Info, serial string
 		return nil
 	}
 
+	heading := "Lighting"
+	if info.Kind == device.KindLight {
+		heading = "Light" // G HUB's own heading on the Litra page
+	}
 	body := container.NewVBox(
-		panelHeading("Lighting"),
+		panelHeading(heading),
 		widget.NewLabel(""),
 	)
 
 	if hasPower {
-		check := widget.NewCheck("Power", nil)
-		check.Checked = saved.Power
-		check.OnChanged = func(on bool) {
-			if err := pc.SetPower(on); err != nil {
-				log.Printf("logitux: set power on %s: %v", info.Name, err)
-				return
-			}
-			a.saveState(serial, func(s *config.DeviceState) { s.Power = on })
-		}
-		body.Add(check)
-	}
-
-	if hasBrightness {
-		initial := saved.Brightness
-		if initial <= 0 {
-			initial = 50
-		}
-		body.Add(labeledSlider("Brightness", func(v int) string { return fmt.Sprintf("%d%%", v) },
-			initial, 0, 100, 1, func(percent int) {
-				if err := bc.SetBrightness(percent); err != nil {
-					log.Printf("logitux: set brightness on %s: %v", info.Name, err)
-					return
+		body.Add(powerPill(saved.Power,
+			func(on bool) error {
+				if err := pc.SetPower(on); err != nil {
+					log.Printf("logitux: set power on %s: %v", info.Name, err)
+					return err
 				}
-				a.saveState(serial, func(s *config.DeviceState) { s.Brightness = percent })
+				return nil
+			},
+			func(on bool) {
+				if glow != nil {
+					glow.setPower(on)
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.Power = on })
 			}))
+		body.Add(widget.NewLabel(""))
 	}
 
 	if hasTemperature {
@@ -439,13 +598,39 @@ func lightingPanel(a *appState, d device.Device, info device.Info, serial string
 		if initial <= 0 {
 			initial = (min + max) / 2
 		}
-		body.Add(labeledSlider("Color Temperature", func(v int) string { return fmt.Sprintf("%dK", v) },
+		// Left end = min Kelvin = warm, so the strip runs warm-to-cool —
+		// mirrored from G HUB's, whose slider runs the other direction.
+		body.Add(gradientSlider("Temperature", func(v int) string { return fmt.Sprintf("%dK", v) },
+			"Warm", "Cool", warmColor, coolColor,
 			initial, min, max, 100, func(kelvin int) {
 				if err := tc.SetTemperature(kelvin); err != nil {
 					log.Printf("logitux: set temperature on %s: %v", info.Name, err)
 					return
 				}
+				if glow != nil {
+					glow.setTemperature(kelvin)
+				}
 				a.saveState(serial, func(s *config.DeviceState) { s.Temperature = kelvin })
+			}))
+		body.Add(widget.NewLabel(""))
+	}
+
+	if hasBrightness {
+		initial := saved.Brightness
+		if initial <= 0 {
+			initial = 50
+		}
+		body.Add(gradientSlider("Brightness", func(v int) string { return fmt.Sprintf("%d%%", v) },
+			"Dim", "Bright", color.NRGBA{R: 0x3a, G: 0x3a, B: 0x40, A: 0xff}, color.NRGBA{R: 0xf2, G: 0xf2, B: 0xf2, A: 0xff},
+			initial, 0, 100, 1, func(percent int) {
+				if err := bc.SetBrightness(percent); err != nil {
+					log.Printf("logitux: set brightness on %s: %v", info.Name, err)
+					return
+				}
+				if glow != nil {
+					glow.setBrightness(percent)
+				}
+				a.saveState(serial, func(s *config.DeviceState) { s.Brightness = percent })
 			}))
 	}
 
