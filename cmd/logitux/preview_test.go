@@ -47,7 +47,7 @@ func TestGeneratePreview(t *testing.T) {
 		&fakeBattDevice{fakeDevice{info: device.Info{Name: "G Pro Wireless", Kind: device.KindMouse, Serial: "A1B2C3"}, percent: 93, charging: true}},
 		&fakeLightDevice{fakeDevice{info: device.Info{Name: "Litra Glow", Kind: device.KindLight, Serial: "D4E5F6"}}},
 		&fakeDevice{info: device.Info{Name: "Litra Beam", Kind: device.KindLight, Serial: "D4E5F7"}},
-		&fakeBattDevice{fakeDevice{info: device.Info{Name: "PRO X Wireless Gaming Headset", Kind: device.KindHeadset, Serial: "G7H8I9"}, percent: 44}},
+		&fakeHeadsetDevice{fakeDevice{info: device.Info{Name: "PRO X Wireless Gaming Headset", Kind: device.KindHeadset, Serial: "G7H8I9"}, percent: 44}},
 	}
 
 	store, err := config.Open(filepath.Join(t.TempDir(), "state.json"))
@@ -75,12 +75,35 @@ func TestGeneratePreview(t *testing.T) {
 	w3 := test.NewWindow(buildMainView(state, devices))
 	w3.Resize(fyne.NewSize(980, 620))
 	save(t, w3.Canvas().Capture(), "preview-litra.png")
+
+	state.selectedSerial = devices[3].Info().Serial
+	w4 := test.NewWindow(buildMainView(state, devices))
+	w4.Resize(fyne.NewSize(980, 620))
+	save(t, w4.Canvas().Capture(), "preview-headset.png")
 }
 
 func (f *fakeLightDevice) SetPower(bool) error          { return nil }
 func (f *fakeLightDevice) SetBrightness(int) error      { return nil }
 func (f *fakeLightDevice) SetTemperature(int) error     { return nil }
 func (f *fakeLightDevice) TemperatureRange() (int, int) { return 2700, 6500 }
+
+type fakeHeadsetDevice struct{ fakeDevice }
+
+func (f *fakeHeadsetDevice) Battery() (int, bool, error) { return f.percent, f.charging, nil }
+func (f *fakeHeadsetDevice) Sidetone() (int, error)      { return 30, nil }
+func (f *fakeHeadsetDevice) SetSidetone(int) error       { return nil }
+func (f *fakeHeadsetDevice) EqualizerBands() []device.EqualizerBand {
+	bands := make([]device.EqualizerBand, 0, 10)
+	for _, hz := range []int{32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000} {
+		bands = append(bands, device.EqualizerBand{FrequencyHz: hz})
+	}
+	return bands
+}
+func (f *fakeHeadsetDevice) EqualizerRange() (int, int) { return -12, 12 }
+func (f *fakeHeadsetDevice) EqualizerLevels() ([]int, error) {
+	return []int{0, 0, 0, 2, 4, 6, 6, 7, 7, 7}, nil
+}
+func (f *fakeHeadsetDevice) SetEqualizerLevels([]int) error { return nil }
 
 func (f *fakeBattDevice) DPIRange() (int, int, int)    { return 100, 25600, 50 }
 func (f *fakeBattDevice) SetDPI(int) error             { return nil }

@@ -94,7 +94,7 @@ func buildDevicePage(a *appState, devices []device.Device, d device.Device) fyne
 		glow = newLightGlow(saved)
 	}
 
-	showcase := deviceShowcase(d, glow)
+	showcase := deviceShowcase(a, d, glow)
 	sections := deviceSections(a, d, glow)
 	if len(sections) == 0 {
 		return container.NewBorder(topBar, nil, nil, nil, showcase)
@@ -220,10 +220,12 @@ func kelvinColor(kelvin int) color.NRGBA {
 }
 
 // deviceShowcase fills a device page's main area, G HUB-style: battery
-// level (and serial) in the top-left corner, and a large product render
-// under a faded oversized product name. glow, non-nil only for lights,
-// is layered behind the render.
-func deviceShowcase(d device.Device, glow *lightGlow) fyne.CanvasObject {
+// level (and serial) in the top-left corner, and — under a faded
+// oversized product name — either the device's equalizer (G HUB gives
+// headsets' ADVANCED EQ the main area, in place of the render) or a
+// large product render. glow, non-nil only for lights, is layered behind
+// the render.
+func deviceShowcase(a *appState, d device.Device, glow *lightGlow) fyne.CanvasObject {
 	info := d.Info()
 
 	var infoRows []fyne.CanvasObject
@@ -252,21 +254,32 @@ func deviceShowcase(d device.Device, glow *lightGlow) fyne.CanvasObject {
 	ghost := canvas.NewText(strings.ToUpper(info.Name), color.NRGBA{R: 0x28, G: 0x28, B: 0x2c, A: 0xff})
 	ghost.TextStyle = fyne.TextStyle{Bold: true}
 	ghost.TextSize = theme.Size(theme.SizeNameHeadingText) * 1.7
+	if len(info.Name) > 18 {
+		// Long names ("PRO X WIRELESS GAMING HEADSET") would clip and
+		// run under the corner info block at full display size.
+		ghost.TextSize = theme.Size(theme.SizeNameHeadingText)
+	}
 
-	art := canvas.NewImageFromResource(artForDevice(info))
-	art.FillMode = canvas.ImageFillContain
-	art.SetMinSize(fyne.NewSize(340, 300))
+	var feature fyne.CanvasObject
+	if eq, ok := d.(device.EqualizerControl); ok && len(eq.EqualizerBands()) > 0 {
+		saved, _ := a.store.Get(info.Serial)
+		feature = equalizerShowcase(a, eq, info, info.Serial, saved, eq.EqualizerBands())
+	} else {
+		art := canvas.NewImageFromResource(artForDevice(info))
+		art.FillMode = canvas.ImageFillContain
+		art.SetMinSize(fyne.NewSize(340, 300))
 
-	render := fyne.CanvasObject(art)
-	if glow != nil {
-		glow.gradient.SetMinSize(fyne.NewSize(400, 360))
-		render = container.NewStack(glow.gradient, container.NewCenter(art))
+		feature = art
+		if glow != nil {
+			glow.gradient.SetMinSize(fyne.NewSize(400, 360))
+			feature = container.NewStack(glow.gradient, container.NewCenter(art))
+		}
 	}
 
 	center := container.NewVBox(
 		layout.NewSpacer(),
 		container.NewCenter(ghost),
-		container.NewCenter(render),
+		container.NewCenter(feature),
 		layout.NewSpacer(),
 	)
 	return container.NewStack(center, corner)
@@ -332,9 +345,10 @@ func panelValue(text string) fyne.CanvasObject {
 	return t
 }
 
-// labeledSlider renders caption text, a live bold readout of the current
-// value, and the slider itself. onChanged receives each new value after
-// the readout has updated.
+// labeledSlider renders a caption row with a live bold readout of the
+// current value right-aligned (G HUB-style), the slider, and the range's
+// ends labeled beneath it. onChanged receives each new value after the
+// readout has updated.
 func labeledSlider(captionText string, format func(int) string, initial, min, max, step int, onChanged func(int)) fyne.CanvasObject {
 	value := canvas.NewText(format(initial), colorForeground)
 	value.TextStyle = fyne.TextStyle{Bold: true}
@@ -348,7 +362,17 @@ func labeledSlider(captionText string, format func(int) string, initial, min, ma
 		value.Refresh()
 		onChanged(int(v))
 	}
-	return container.NewVBox(panelCaption(captionText), value, slider)
+
+	left := canvas.NewText(format(min), colorSecondary)
+	left.TextSize = theme.Size(theme.SizeNameCaptionText)
+	right := canvas.NewText(format(max), colorSecondary)
+	right.TextSize = theme.Size(theme.SizeNameCaptionText)
+
+	return container.NewVBox(
+		container.NewHBox(panelCaption(captionText), layout.NewSpacer(), value),
+		slider,
+		container.NewHBox(left, layout.NewSpacer(), right),
+	)
 }
 
 // gradientSlider is labeledSlider plus what G HUB's light sliders have:
@@ -669,16 +693,22 @@ func lightingPanel(a *appState, d device.Device, info device.Info, serial string
 }
 
 // soundPanel covers SidetoneControl and EqualizerControl (headsets), or
-// nil if the device has neither.
+// nil if the device has neither. The equalizer itself renders in the
+// showcase area (see equalizerShowcase), like G HUB's ADVANCED EQ; the
+// panel holds the sidetone slider.
 func soundPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState) fyne.CanvasObject {
 	stc, hasSidetone := d.(device.SidetoneControl)
-	eq, hasEQ := d.(device.EqualizerControl)
+	_, hasEQ := d.(device.EqualizerControl)
 	if !hasSidetone && !hasEQ {
 		return nil
 	}
 
+	heading := "Sound"
+	if info.Kind == device.KindHeadset {
+		heading = "Headphones" // G HUB's own heading on headset pages
+	}
 	body := container.NewVBox(
-		panelHeading("Sound"),
+		panelHeading(heading),
 		widget.NewLabel(""),
 	)
 
@@ -698,21 +728,22 @@ func soundPanel(a *appState, d device.Device, info device.Info, serial string, s
 	}
 
 	if hasEQ {
-		if bands := eq.EqualizerBands(); len(bands) > 0 {
-			body.Add(widget.NewLabel(""))
-			body.Add(equalizerSection(a, eq, info, serial, saved, bands))
-		}
+		body.Add(widget.NewLabel(""))
+		body.Add(panelNote("The advanced EQ is on the right;", "changes apply immediately."))
 	}
 
 	return body
 }
 
-// equalizerSection renders one slider per equalizer band. All sliders
-// share a single in-memory levels snapshot (seeded from a live read, or
-// last-saved values if that fails) rather than re-reading the device on
-// every change, since SetEqualizerLevels writes every band's level at
-// once and a slider can fire OnChanged many times during a single drag.
-func equalizerSection(a *appState, eq device.EqualizerControl, info device.Info, serial string, saved config.DeviceState, bands []device.EqualizerBand) fyne.CanvasObject {
+// equalizerShowcase renders a device's equalizer the way G HUB does:
+// a bank of vertical sliders across the page's main area, one per band,
+// with the frequency above and the current dB below each, a dB scale on
+// the left, and a reset button. All sliders share a single in-memory
+// levels snapshot (seeded from a live read, or last-saved values if that
+// fails) rather than re-reading the device on every change, since
+// SetEqualizerLevels writes every band's level at once and a slider can
+// fire OnChanged many times during a single drag.
+func equalizerShowcase(a *appState, eq device.EqualizerControl, info device.Info, serial string, saved config.DeviceState, bands []device.EqualizerBand) fyne.CanvasObject {
 	min, max := eq.EqualizerRange()
 
 	levels := make([]int, len(bands))
@@ -722,31 +753,83 @@ func equalizerSection(a *appState, eq device.EqualizerControl, info device.Info,
 		copy(levels, saved.EqualizerLevels)
 	}
 
-	section := container.NewVBox(panelCaption("Equalizer"))
+	writeLevels := func() bool {
+		if err := eq.SetEqualizerLevels(levels); err != nil {
+			log.Printf("logitux: set equalizer on %s: %v", info.Name, err)
+			return false
+		}
+		saveLevels := append([]int(nil), levels...)
+		a.saveState(serial, func(s *config.DeviceState) { s.EqualizerLevels = saveLevels })
+		return true
+	}
+
+	small := func(text string) *canvas.Text {
+		t := canvas.NewText(text, colorSecondary)
+		t.TextSize = theme.Size(theme.SizeNameCaptionText)
+		return t
+	}
+
+	const sliderHeight = 230
+	sliders := make([]*widget.Slider, len(bands))
+	values := make([]*canvas.Text, len(bands))
+	columns := make([]fyne.CanvasObject, 0, len(bands)+1)
+
+	// dB scale, aligned with the sliders' track area.
+	scale := container.NewVBox(small(fmt.Sprintf("+%ddB", max)), layout.NewSpacer(), small("0"), layout.NewSpacer(), small(fmt.Sprintf("%ddB", min)))
+	scaleSizer := canvas.NewRectangle(color.Transparent)
+	scaleSizer.SetMinSize(fyne.NewSize(0, sliderHeight))
+	columns = append(columns, container.NewVBox(small(""), container.NewStack(scaleSizer, scale), small("")))
+
 	for i, band := range bands {
 		i := i
-		freqLabel := formatFrequency(band.FrequencyHz)
-
-		value := canvas.NewText(fmt.Sprintf("%s: %ddB", freqLabel, levels[i]), colorForeground)
+		value := canvas.NewText(fmt.Sprintf("%d", levels[i]), colorForeground)
+		value.TextStyle = fyne.TextStyle{Bold: true}
 		value.TextSize = theme.Size(theme.SizeNameCaptionText)
+
 		slider := widget.NewSlider(float64(min), float64(max))
-		slider.Value = float64(levels[i])
+		slider.Orientation = widget.Vertical
 		slider.Step = 1
+		slider.Value = float64(levels[i])
 		slider.OnChanged = func(v float64) {
 			levels[i] = int(v)
-			value.Text = fmt.Sprintf("%s: %ddB", freqLabel, levels[i])
+			value.Text = fmt.Sprintf("%d", levels[i])
 			value.Refresh()
-			if err := eq.SetEqualizerLevels(levels); err != nil {
-				log.Printf("logitux: set equalizer on %s: %v", info.Name, err)
-				return
-			}
-			saveLevels := append([]int(nil), levels...)
-			a.saveState(serial, func(s *config.DeviceState) { s.EqualizerLevels = saveLevels })
+			writeLevels()
 		}
-		section.Add(value)
-		section.Add(slider)
+		sliders[i] = slider
+		values[i] = value
+
+		sizer := canvas.NewRectangle(color.Transparent)
+		sizer.SetMinSize(fyne.NewSize(34, sliderHeight))
+		columns = append(columns, container.NewVBox(
+			container.NewCenter(small(formatFrequency(band.FrequencyHz))),
+			container.NewStack(sizer, slider),
+			container.NewCenter(value),
+		))
 	}
-	return section
+
+	reset := widget.NewButton("Reset", func() {
+		for i := range levels {
+			levels[i] = 0
+		}
+		if !writeLevels() {
+			return
+		}
+		for i := range sliders {
+			sliders[i].Value = 0
+			sliders[i].Refresh()
+			values[i].Text = "0"
+			values[i].Refresh()
+		}
+	})
+
+	return container.NewVBox(
+		container.NewCenter(panelCaption("Advanced EQ")),
+		widget.NewLabel(""),
+		container.NewCenter(container.NewHBox(columns...)),
+		widget.NewLabel(""),
+		container.NewCenter(reset),
+	)
 }
 
 // formatFrequency renders a band frequency compactly, e.g. 125 -> "125Hz",
