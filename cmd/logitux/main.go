@@ -44,11 +44,14 @@ type appState struct {
 	mu      sync.Mutex
 	current map[string]device.Device // keyed by serial
 
-	// selectedTab remembers which device tab is active across rebuilds
-	// (buildDeviceList runs on every discovery tick). Only ever touched
-	// from the main/UI goroutine — inside fyne.Do in refresh, or from a
-	// widget callback — so it needs no lock, unlike current above.
-	selectedTab string
+	// selectedSerial is the serial of the device whose page is open, or
+	// "" when the dashboard (the home screen) is showing. It survives
+	// rebuilds (buildMainView runs on every discovery tick) so the open
+	// page stays open; if that device unplugs, the UI falls back to the
+	// dashboard. Only ever touched from the main/UI goroutine — inside
+	// fyne.Do in refresh, or from a widget callback — so it needs no
+	// lock, unlike current above.
+	selectedSerial string
 
 	// advancedOpen remembers, per device serial, whether that device
 	// card's "Advanced" section is expanded. Device cards are rebuilt
@@ -164,7 +167,7 @@ func (a *appState) refresh() {
 	}
 
 	fyne.Do(func() {
-		a.window.SetContent(buildDeviceList(a, devices))
+		a.window.SetContent(buildMainView(a, devices))
 		a.updateSystemTrayMenu(devices)
 	})
 }

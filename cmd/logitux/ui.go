@@ -23,68 +23,50 @@ func loadingPlaceholder() fyne.CanvasObject {
 	return container.NewCenter(widget.NewLabel("Looking for Logitech devices..."))
 }
 
-// buildDeviceList renders one tab per connected device, or an explanatory
-// message when nothing was found. Tabs appear and disappear automatically
-// as devices connect/disconnect, since this is rebuilt from the live
-// device list on every discovery tick (see appState.refresh); there's
-// nothing separate to reconcile.
-func buildDeviceList(a *appState, devices []device.Device) fyne.CanvasObject {
-	if len(devices) == 0 {
-		msg := widget.NewLabel("No supported Logitech devices found.\n\n" +
-			"Make sure the device is plugged in and the udev rule installed by " +
-			"LogiTux's installer has been applied (see the README).")
-		msg.Wrapping = fyne.TextWrapWord
-		msg.Alignment = fyne.TextAlignCenter
-		return container.NewCenter(msg)
+// buildMainView renders the app's single-screen navigation, G HUB-style:
+// the dashboard of device cards is the home screen, tapping a card opens
+// that device's page full-window, and a back arrow in the page's top-left
+// returns to the dashboard. Rebuilt from the live device list on every
+// discovery tick (see appState.refresh); a.selectedSerial carries which
+// screen is showing across rebuilds, and falls back to the dashboard if
+// the open device's page unplugs.
+func buildMainView(a *appState, devices []device.Device) fyne.CanvasObject {
+	if d := a.selectedDevice(devices); d != nil {
+		return buildDevicePage(a, devices, d)
 	}
+	a.selectedSerial = ""
+	return buildDashboard(devices, func(index int) {
+		a.selectedSerial = devices[index].Info().Serial
+		a.window.SetContent(buildMainView(a, devices))
+	})
+}
 
-	labels := make([]string, len(devices))
-	seen := make(map[string]int, len(devices))
+// selectedDevice resolves a.selectedSerial against the current device
+// list: the device whose page should be showing, or nil for the
+// dashboard (nothing selected, or the selected device is gone).
+func (a *appState) selectedDevice(devices []device.Device) device.Device {
+	if a.selectedSerial == "" {
+		return nil
+	}
 	for _, d := range devices {
-		seen[d.Info().Name]++
-	}
-	for i, d := range devices {
-		name := d.Info().Name
-		if seen[name] > 1 {
-			// Disambiguate same-model devices with a short serial suffix.
-			serial := d.Info().Serial
-			if len(serial) > 6 {
-				serial = serial[len(serial)-6:]
-			}
-			name = fmt.Sprintf("%s (%s)", name, serial)
-		}
-		labels[i] = name
-	}
-
-	deviceItems := make([]*container.TabItem, len(devices))
-	for i, d := range devices {
-		deviceItems[i] = container.NewTabItem(labels[i], container.NewVScroll(buildDeviceCard(a, d)))
-	}
-
-	tabs := container.NewAppTabs()
-	dashboardItem := container.NewTabItem("Dashboard", buildDashboard(devices, func(index int) {
-		tabs.Select(deviceItems[index])
-	}))
-	tabs.Append(dashboardItem)
-	for _, item := range deviceItems {
-		tabs.Append(item)
-	}
-	tabs.OnSelected = func(item *container.TabItem) {
-		a.selectedTab = item.Text
-	}
-
-	// Restore whichever tab was selected before this rebuild (a fresh
-	// start, with no prior selection, lands on the Dashboard).
-	selectItem := dashboardItem
-	for i, l := range labels {
-		if l == a.selectedTab {
-			selectItem = deviceItems[i]
+		if d.Info().Serial == a.selectedSerial {
+			return d
 		}
 	}
-	tabs.Select(selectItem)
-	a.selectedTab = selectItem.Text
+	return nil
+}
 
-	return tabs
+// buildDevicePage renders one device's full controls with a back arrow
+// (top-left, like G HUB) that returns to the dashboard.
+func buildDevicePage(a *appState, devices []device.Device, d device.Device) fyne.CanvasObject {
+	back := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
+		a.selectedSerial = ""
+		a.window.SetContent(buildMainView(a, devices))
+	})
+	back.Importance = widget.LowImportance
+
+	topBar := container.NewHBox(back)
+	return container.NewBorder(topBar, nil, nil, nil, container.NewVScroll(buildDeviceCard(a, d)))
 }
 
 // buildDeviceCard renders the controls a device supports, based on which

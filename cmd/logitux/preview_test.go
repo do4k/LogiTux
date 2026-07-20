@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
 
 	"logitux/internal/config"
@@ -55,11 +54,12 @@ func TestGeneratePreview(t *testing.T) {
 	}
 	state := &appState{store: store, advancedOpen: map[string]bool{}}
 
-	w := test.NewWindow(buildDeviceList(state, devices))
+	w := test.NewWindow(buildMainView(state, devices))
 	w.Resize(fyne.NewSize(980, 620))
 	save(t, w.Canvas().Capture(), "preview-dashboard.png")
 
-	w2 := test.NewWindow(container.NewVScroll(buildDeviceCard(state, devices[0])))
+	state.selectedSerial = devices[0].Info().Serial
+	w2 := test.NewWindow(buildMainView(state, devices))
 	w2.Resize(fyne.NewSize(980, 620))
 	save(t, w2.Canvas().Capture(), "preview-device.png")
 }

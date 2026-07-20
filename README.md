@@ -7,7 +7,7 @@ LogiTux talks to hardware directly over Linux's `hidraw` interface (no
 `libhidapi` dependency, no cgo for device I/O), so installation only needs
 a Go toolchain and Fyne's usual GUI build dependencies.
 
-![LogiTux's Dashboard tab, styled after Logitech G HUB: one dark card per connected device with a product render (original artwork, not Logitech's — see Credit), battery level, and a settings button](images/screenshot-dashboard.png)
+![LogiTux's Dashboard, styled after Logitech G HUB: one dark card per connected device with a product render (original artwork, not Logitech's — see Credit), battery level, and a settings button](images/screenshot-dashboard.png)
 ![LogiTux's device page for a G Pro Wireless: product render and name in the header, then DPI and battery controls](images/screenshot-mouse.png)
 
 ## Status
@@ -27,12 +27,14 @@ v1 supports:
   per-band equalizer (band count/frequencies/dB range are read from the
   device, not assumed).
 
-The UI is styled after Logitech's own G HUB: a near-black theme with a
-cyan-blue accent, and a **Dashboard** tab that shows every connected
-device as a clickable G HUB-style card (product render, name, battery
-level if it has one — a bolt marks charging, and a settings button);
-clicking one jumps to its own tab with full controls. Device tabs only
-exist while that device is actually connected. Each tab keeps the one or
+The UI is styled after Logitech's own G HUB, navigation included: the
+**Dashboard** — a near-black home screen with a cyan-blue accent — shows
+every connected device as a clickable card (product render, name,
+battery level if it has one — a bolt marks charging, and a settings
+button); clicking one opens that device's page with its full controls,
+and the back arrow in the page's top-left returns to the Dashboard. A
+device's page only exists while it's actually connected — unplugging
+drops you back on the Dashboard. Each page keeps the one or
 two settings you're likely to adjust often (power, brightness/DPI,
 battery) directly visible, with everything else — color temperature,
 report rate, RGB, button remapping, sidetone, the equalizer — tucked under
@@ -76,9 +78,10 @@ To remove everything `install.sh` set up, run `./uninstall.sh`.
 ## Usage
 
 LogiTux polls for supported devices every few seconds. Each connected
-device gets its own tab (tabs disappear when a device is unplugged), with
-whichever controls it supports — a power checkbox, sliders, dropdowns, a
-color picker. Changes are applied immediately.
+device gets its own page, opened from its Dashboard card (and gone once
+the device unplugs), with whichever controls it supports — a power
+checkbox, sliders, dropdowns, a color picker. Changes are applied
+immediately.
 
 Closing the window minimizes LogiTux to the system tray rather than
 quitting; use the tray menu's "Quit" item to actually exit. The tray also
@@ -133,7 +136,7 @@ restores normal clicking.
 ## Architecture
 
 ```
-cmd/logitux/             GUI entry point (Fyne): window, tabs, dashboard, systray, widgets
+cmd/logitux/             GUI entry point (Fyne): window, dashboard, device pages, systray
 internal/hid/            Pure-Go hidraw backend: enumerate + open /dev/hidrawN
 internal/hidpp/          HID++ 2.0 transport: feature calls, notifications, shared battery logic
 internal/uinput/         Virtual input device, for button remapping

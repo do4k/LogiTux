@@ -26,7 +26,7 @@ const (
 // device: bold uppercase name, battery status, a large product render
 // (see assets.go), and a settings button. Tapping a card (or its gear)
 // calls onSelect with that device's index in devices, so the caller can
-// switch to its full control tab.
+// open its device page.
 func buildDashboard(devices []device.Device, onSelect func(index int)) fyne.CanvasObject {
 	if len(devices) == 0 {
 		msg := widget.NewLabel("No supported Logitech devices found.\n\n" +
@@ -37,10 +37,25 @@ func buildDashboard(devices []device.Device, onSelect func(index int)) fyne.Canv
 		return container.NewCenter(msg)
 	}
 
+	seen := make(map[string]int, len(devices))
+	for _, d := range devices {
+		seen[d.Info().Name]++
+	}
+
 	tiles := make([]fyne.CanvasObject, len(devices))
 	for i, d := range devices {
 		index := i // captured per-iteration (Go 1.22+ loop semantics)
-		tiles[i] = newDeviceTile(d, func() { onSelect(index) })
+		name := d.Info().Name
+		if seen[name] > 1 {
+			// Disambiguate same-model devices with a short serial suffix,
+			// so their otherwise-identical cards can be told apart.
+			serial := d.Info().Serial
+			if len(serial) > 6 {
+				serial = serial[len(serial)-6:]
+			}
+			name = fmt.Sprintf("%s (%s)", name, serial)
+		}
+		tiles[i] = newDeviceTile(d, name, func() { onSelect(index) })
 	}
 	grid := container.NewGridWrap(fyne.NewSize(tileWidth, tileHeight), tiles...)
 	return container.NewVScroll(container.NewPadded(grid))
@@ -50,17 +65,18 @@ func buildDashboard(devices []device.Device, onSelect func(index int)) fyne.Canv
 // top-left, battery below it, product image filling the middle, gear
 // bottom-right. Fyne's widget.Card isn't tappable (or hoverable), so this
 // is a custom widget; the whole card and the gear both open the device's
-// tab.
+// page.
 type deviceTile struct {
 	widget.BaseWidget
-	d     device.Device
-	onTap func()
+	d           device.Device
+	displayName string // Info().Name, possibly serial-suffixed by buildDashboard
+	onTap       func()
 
 	bg *canvas.Rectangle // kept for the hover highlight
 }
 
-func newDeviceTile(d device.Device, onTap func()) *deviceTile {
-	t := &deviceTile{d: d, onTap: onTap}
+func newDeviceTile(d device.Device, displayName string, onTap func()) *deviceTile {
+	t := &deviceTile{d: d, displayName: displayName, onTap: onTap}
 	t.ExtendBaseWidget(t)
 	return t
 }
@@ -71,7 +87,7 @@ func (t *deviceTile) CreateRenderer() fyne.WidgetRenderer {
 	t.bg = canvas.NewRectangle(colorCard)
 	t.bg.CornerRadius = 10
 
-	name := canvas.NewText(strings.ToUpper(info.Name), colorForeground)
+	name := canvas.NewText(strings.ToUpper(t.displayName), colorForeground)
 	name.TextStyle = fyne.TextStyle{Bold: true}
 	name.TextSize = theme.Size(theme.SizeNameText)
 
