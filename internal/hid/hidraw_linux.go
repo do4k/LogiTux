@@ -1,11 +1,9 @@
 //go:build linux
 
-// Package hid provides minimal access to Linux hidraw character devices.
-//
-// It talks to /sys/class/hidraw for device discovery and /dev/hidrawN for
-// I/O, using only the standard library. This avoids a build- and run-time
-// dependency on libhidapi (as opposed to a cgo binding), which keeps
-// LogiTux to a single static-ish binary.
+// This file is the Linux hidraw implementation of the Backend interface
+// declared in hid.go: device discovery via /sys/class/hidraw and I/O via
+// /dev/hidrawN, using only the standard library (no libhidapi/cgo).
+
 package hid
 
 import (
@@ -18,35 +16,10 @@ import (
 	"strings"
 )
 
-// Info describes a discovered hidraw device.
-type Info struct {
-	Path      string // e.g. /dev/hidraw0
-	VendorID  uint16
-	ProductID uint16
-	Serial    string
+// On Linux, Default is the real sysfs/dev-backed Backend.
+func init() {
+	Default = &sysfsBackend{classPath: "/sys/class/hidraw", devPath: "/dev"}
 }
-
-// Handle is an open hidraw device. Write-only protocols (e.g. the Litra
-// plugin) only ever call Write/Close; request/response protocols (e.g.
-// HID++, used by the gpro plugin) also read reports back.
-type Handle interface {
-	Read(data []byte) (int, error)
-	Write(data []byte) (int, error)
-	Close() error
-}
-
-// Backend abstracts hidraw discovery and access so device plugins can be
-// unit tested without real hardware or sysfs.
-type Backend interface {
-	// Enumerate returns all hidraw devices matching vendorID/productID.
-	// A productID of 0 matches any product for the given vendor.
-	Enumerate(vendorID, productID uint16) ([]Info, error)
-	// Open opens the hidraw device described by info for reading/writing.
-	Open(info Info) (Handle, error)
-}
-
-// Default is the real sysfs/dev-backed Backend.
-var Default Backend = &sysfsBackend{classPath: "/sys/class/hidraw", devPath: "/dev"}
 
 type sysfsBackend struct {
 	classPath string

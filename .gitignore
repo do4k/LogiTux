@@ -3,3 +3,12 @@
 *.test
 *.out
 .DS_Store
+
+# macOS packaging scratch (produced by CI's build-macos job)
+/LogiTux.app/
+/AppIcon.iconset/
+/logitux
+
+# Stray tooling that shouldn't live in the repo
+/lazygit
+/lazygit.tar.gz
