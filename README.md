@@ -1,11 +1,13 @@
 # LogiTux
 
-A native Linux GUI for controlling Logitech devices — the Logitech G HUB
-equivalent for Linux. Written in Go.
+A native GUI for controlling Logitech devices — the Logitech G HUB
+equivalent, built for Linux first. Written in Go. It also builds and runs
+on Windows and macOS (with a device-support caveat — see [Prebuilt
+packages](#prebuilt-packages)).
 
-LogiTux talks to hardware directly over Linux's `hidraw` interface (no
-`libhidapi` dependency, no cgo for device I/O), so installation only needs
-a Go toolchain and Fyne's usual GUI build dependencies.
+On Linux, LogiTux talks to hardware directly over the `hidraw` interface
+(no `libhidapi` dependency, no cgo for device I/O), so installation only
+needs a Go toolchain and Fyne's usual GUI build dependencies.
 
 ![LogiTux's Dashboard, styled after Logitech G HUB: one dark card per connected device with a product render (original artwork, not Logitech's — see Credit), battery level, and a settings button](images/screenshot-dashboard.png)
 ![LogiTux's device page for a G Pro Wireless: product render and name in the header, then DPI and battery controls](images/screenshot-mouse.png)
@@ -92,6 +94,28 @@ applies, then launch LogiTux from your application menu or run
 
 To remove everything `install.sh` set up, run `./uninstall.sh`.
 
+### Prebuilt packages
+
+Every push builds installable packages for all three platforms in CI (see
+`.github/workflows/build.yml`), and tagging a release (`vX.Y.Z`) attaches
+them to a GitHub Release:
+
+- **Debian/Ubuntu** — a `.deb` (`sudo apt install ./logitux_*_amd64.deb`),
+  which drops the binary in `/usr/bin`, installs the udev rule and desktop
+  entry, and reloads udev for you. A plain binary tarball is also built.
+- **Windows** — a zipped `logitux.exe`.
+- **macOS** — a zipped `LogiTux.app`. It's unsigned, so the first launch
+  needs a right-click → **Open** to get past Gatekeeper.
+
+> **Platform support caveat.** LogiTux was built for Linux, where device
+> support is complete and hardware-tested. It now also **builds and runs**
+> on Windows and macOS — the full G HUB-style UI comes up — but those
+> builds currently ship a *stub* HID backend, so they find no devices yet
+> (`internal/hid`). The device plugins are already cross-platform; only a
+> native Windows (setupapi/hid.dll) or macOS (IOKit) HID backend behind
+> `hid.Default` is needed to light them up. Webcam control stays
+> Linux-only regardless, since it uses V4L2.
+
 ## Usage
 
 LogiTux polls for supported devices every few seconds. Each connected
@@ -154,18 +178,31 @@ restores normal clicking.
 
 ```
 cmd/logitux/             GUI entry point (Fyne): window, dashboard, device pages, systray
-internal/hid/            Pure-Go hidraw backend: enumerate + open /dev/hidrawN
+internal/hid/            HID Backend interface (hid.go) + Linux hidraw impl
+                           (hidraw_linux.go) and a no-op stub for other OSes (hid_stub.go)
 internal/hidpp/          HID++ 2.0 transport: feature calls, notifications, shared battery logic
-internal/uinput/         Virtual input device, for button remapping
+internal/uinput/         Virtual input device for button remapping (Linux; stub elsewhere)
 internal/device/         Plugin registry and capability interfaces
 internal/device/litra/   Litra Glow/Beam plugin (simple vendor HID protocol)
 internal/device/gpro/    G Pro Wireless plugin (HID++ 2.0 protocol)
 internal/device/prox/    PRO X Wireless Gaming Headset plugin (HID++ 2.0 protocol)
-internal/device/webcam/  C920/C922/C930e webcam plugin (V4L2 controls, not HID)
+internal/device/webcam/  C920/C922/C930e webcam plugin (V4L2 controls, not HID; Linux only)
 internal/v4l2/           Pure-Go V4L2 control ioctls: query/get/set on /dev/videoN
 internal/config/         JSON-backed last-known-state store
+packaging/               nfpm .deb config, Debian postinstall, macOS Info.plist template
 install/                 udev rules and .desktop launcher entry
+.github/workflows/       CI: vet/test + per-OS builds (.deb, .exe, .app) and tag releases
 ```
+
+**Cross-platform structure.** The HID-facing types (`Info`, `Handle`,
+`Backend`, `Default`) live in the build-tag-free `internal/hid/hid.go`, so
+every device plugin compiles on all three OSes. `hidraw_linux.go` supplies
+the real Linux backend; `hid_stub.go` (`//go:build !linux`) supplies a
+no-op one so Windows/macOS builds run but find nothing until a native
+backend is written. The `uinput` package is split the same way (real
+Linux `/dev/uinput` device vs. a stub `Open` that reports remapping
+unavailable), and the Linux-only webcam plugin is imported from
+`cmd/logitux/plugins_linux.go` rather than the shared import block.
 
 Device support is added as a plugin: a package registers the vendor/product
 IDs it handles with `internal/device.Register` in an `init()` function (see

@@ -1,4 +1,7 @@
-// Command logitux is a GUI for controlling Logitech devices on Linux.
+// Command logitux is a GUI for controlling Logitech devices. It targets
+// Linux (full device support) and also builds and runs on Windows and
+// macOS, where the HID backend is currently a stub (see internal/hid) so
+// the UI comes up but finds no devices yet.
 package main
 
 import (
@@ -17,11 +20,12 @@ import (
 	"logitux/internal/device"
 
 	// Registers itself with the internal/device registry on import. Add
-	// further device plugins the same way to extend LogiTux.
+	// further device plugins the same way to extend LogiTux. These three
+	// are HID-based and build on every OS; the Linux-only webcam plugin
+	// (V4L2) is imported from plugins_linux.go instead.
 	_ "logitux/internal/device/gpro"
 	_ "logitux/internal/device/litra"
 	_ "logitux/internal/device/prox"
-	_ "logitux/internal/device/webcam"
 	"logitux/internal/hid"
 )
 

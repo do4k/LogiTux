@@ -1,0 +1,32 @@
+# nfpm configuration for building the LogiTux Debian package.
+# Used by CI: `VERSION=1.2.3 nfpm pkg -p deb -f packaging/nfpm.yaml -t dist/`.
+# nfpm expands ${VERSION} from the environment.
+name: logitux
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Dan Oak <coderdan@protonmail.com>
+description: |
+  Control Logitech devices on Linux.
+  A GUI for adjusting Logitech mice, keyboards, headsets, lights and
+  webcams (DPI, lighting, battery, equalizer, camera controls, and more),
+  styled after Logitech G HUB.
+vendor: LogiTux
+homepage: https://github.com/do4k/LogiTux
+license: MIT
+
+contents:
+  - src: ./bin/logitux
+    dst: /usr/bin/logitux
+  - src: ./install/logitux.desktop
+    dst: /usr/share/applications/logitux.desktop
+  - src: ./Icon.png
+    dst: /usr/share/icons/hicolor/512x512/apps/logitux.png
+  - src: ./install/99-logitux.rules
+    dst: /usr/lib/udev/rules.d/99-logitux.rules
+
+# Reload udev so the HID access rule applies without a reboot.
+scripts:
+  postinstall: ./packaging/deb/postinstall.sh

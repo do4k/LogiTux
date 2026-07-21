@@ -1,0 +1,161 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # the release job attaches artifacts to a GitHub Release on tags
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Vet + unit tests on Linux (the only OS with real device backends to test).
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev libwayland-dev
+      - run: go vet ./...
+      - run: go test ./...
+
+  # ---------------------------------------------------------------------------
+  # Version string shared by all build jobs: the tag without its leading "v",
+  # or 0.0.0 for untagged (branch/PR) builds.
+  # ---------------------------------------------------------------------------
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Linux: a stripped binary tarball plus a .deb (built with nfpm).
+  # ---------------------------------------------------------------------------
+  build-linux:
+    needs: [test, version]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev libwayland-dev
+      - name: Build
+        run: CGO_ENABLED=1 go build -ldflags "-s -w" -o bin/logitux ./cmd/logitux
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          tar -czf "dist/logitux_${VERSION}_linux_amd64.tar.gz" -C bin logitux
+      - name: Build .deb
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          "$(go env GOPATH)/bin/nfpm" pkg -p deb -f packaging/nfpm.yaml \
+            -t "dist/logitux_${VERSION}_amd64.deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logitux-linux
+          path: dist/*
+
+  # ---------------------------------------------------------------------------
+  # Windows: a GUI .exe (no console window) zipped up. Cgo uses the MinGW-w64
+  # gcc preinstalled on the GitHub windows runner image.
+  # ---------------------------------------------------------------------------
+  build-windows:
+    needs: [test, version]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        shell: bash
+        run: CGO_ENABLED=1 go build -ldflags "-H=windowsgui -s -w" -o dist/logitux.exe ./cmd/logitux
+      - name: Package zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/logitux.exe -DestinationPath "dist/logitux_${env:VERSION}_windows_amd64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logitux-windows
+          path: dist/*.zip
+
+  # ---------------------------------------------------------------------------
+  # macOS: a .app bundle (Info.plist + generated .icns), zipped with ditto.
+  # Unsigned — see the README note about Gatekeeper on first launch.
+  # ---------------------------------------------------------------------------
+  build-macos:
+    needs: [test, version]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: CGO_ENABLED=1 go build -ldflags "-s -w" -o logitux ./cmd/logitux
+      - name: Assemble .app bundle
+        run: |
+          APP="LogiTux.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp logitux "$APP/Contents/MacOS/logitux"
+          sed "s/__VERSION__/${VERSION}/g" packaging/macos/Info.plist.template > "$APP/Contents/Info.plist"
+
+          # Build an .icns from the 512px Icon.png (sizes up to 512).
+          mkdir AppIcon.iconset
+          for pair in "16 16x16" "32 16x16@2x" "32 32x32" "64 32x32@2x" \
+                      "128 128x128" "256 128x128@2x" "256 256x256" "512 256x256@2x" "512 512x512"; do
+            set -- $pair
+            sips -z "$1" "$1" Icon.png --out "AppIcon.iconset/icon_$2.png" >/dev/null
+          done
+          iconutil -c icns AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+      - name: Package zip
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent LogiTux.app "dist/logitux_${VERSION}_macos.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logitux-macos
+          path: dist/*.zip
+
+  # ---------------------------------------------------------------------------
+  # On a version tag, gather every platform's artifacts into one GitHub Release.
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [build-linux, build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

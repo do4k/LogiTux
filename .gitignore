@@ -3,3 +3,8 @@
 *.test
 *.out
 .DS_Store
+
+# macOS packaging scratch (produced by CI's build-macos job)
+/LogiTux.app/
+/AppIcon.iconset/
+/logitux
