@@ -78,7 +78,11 @@ var candidateControls = []struct {
 	{"Sharpness", v4l2.CtrlSharpness},
 }
 
-func discover() ([]device.Device, []error) {
+// discover enumerates candidate video nodes cheaply (reading each node's
+// modalias to match a known Logitech camera) and defers the actual open —
+// which does the V4L2 QUERYCAP/QUERYCTRL ioctls — to each Candidate's Open
+// thunk, so a node LogiTux already holds isn't reopened on every tick.
+func discover() ([]device.Candidate, []error) {
 	entries, err := os.ReadDir(classPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -93,8 +97,7 @@ func discover() ([]device.Device, []error) {
 	}
 	sort.Strings(names)
 
-	var devices []device.Device
-	var errs []error
+	var candidates []device.Candidate
 	for _, name := range names {
 		vendor, product, ok := usbIDs(filepath.Join(classPath, name, "device", "modalias"))
 		if !ok || vendor != vendorLogitech {
@@ -105,16 +108,22 @@ func discover() ([]device.Device, []error) {
 			continue
 		}
 
-		w, err := open(name, vendor, product, productName)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("webcam: open %s: %w", name, err))
-			continue
-		}
-		if w != nil {
-			devices = append(devices, w)
-		}
+		name, vendor, product, productName := name, vendor, product, productName
+		candidates = append(candidates, device.Candidate{
+			Key: filepath.Join(devPath, name),
+			Open: func() (device.Device, error) {
+				w, err := open(name, vendor, product, productName)
+				if err != nil {
+					return nil, fmt.Errorf("webcam: open %s: %w", name, err)
+				}
+				if w == nil {
+					return nil, nil // e.g. a UVC metadata node, not the capture interface
+				}
+				return w, nil
+			},
+		})
 	}
-	return devices, errs
+	return candidates, nil
 }
 
 // usbIDs parses a sysfs modalias like "usb:v046Dp085Cd0016..." into its

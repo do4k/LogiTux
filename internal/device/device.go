@@ -162,9 +162,22 @@ type CameraControlSet interface {
 // physical devices expose more than one hidraw node for the same product
 // (e.g. a wireless receiver has one hidraw interface per USB interface);
 // OpenFunc may return (nil, nil) to say "not an error, but this particular
-// node isn't the one to use," and Discover will silently skip it rather
-// than treating it as a device or an error.
+// node isn't the one to use," and the caller should silently skip it
+// rather than treating it as a device or an error.
 type OpenFunc func(backend hid.Backend, info hid.Info) (Device, error)
+
+// Candidate is a present-but-not-yet-opened device: a cheap, stable Key
+// (unique per physical interface, e.g. its /dev node path) plus an Open
+// thunk that performs the possibly-expensive construction — for a HID++
+// device, that means feature discovery, a burst of round-trips to the
+// hardware. Separating "present" from "opened" lets the caller skip
+// re-opening devices it already holds; re-opening a wireless HID++ device
+// on a timer floods it with discovery traffic on a second hidraw fd and
+// stalls the live connection.
+type Candidate struct {
+	Key  string
+	Open func() (Device, error)
+}
 
 type plugin struct {
 	vendorID   uint16
@@ -183,8 +196,10 @@ func Register(vendorID uint16, productIDs []uint16, open OpenFunc) {
 // Discoverer finds devices that don't live behind the hidraw backend at
 // all — e.g. webcams, which are V4L2 devices. Registered via
 // RegisterDiscoverer from a plugin package's init(), and run on every
-// Discover alongside the hidraw plugins.
-type Discoverer func() ([]Device, []error)
+// Discover alongside the hidraw plugins. Like the hidraw path, a
+// Discoverer enumerates cheaply and defers the actual open to each
+// Candidate's Open thunk.
+type Discoverer func() ([]Candidate, []error)
 
 var discoverers []Discoverer
 
@@ -193,15 +208,22 @@ func RegisterDiscoverer(fn Discoverer) {
 	discoverers = append(discoverers, fn)
 }
 
-// Discover enumerates hidraw devices via backend and opens every one that
-// matches a registered plugin. It does not fail on individual device
-// errors (e.g. a permission problem on one light); those are returned
-// alongside any devices that opened successfully.
-func Discover(backend hid.Backend) ([]Device, []error) {
-	var devices []Device
+// Discover enumerates present supported devices without opening them,
+// returning one Candidate per device. Enumeration is cheap — hidraw/sysfs
+// listing for the HID plugins, plus each registered Discoverer's own scan
+// — and the potentially expensive open (and the device I/O it entails)
+// happens only when the caller invokes a Candidate's Open. Enumeration
+// errors (e.g. a backend that can't list a vendor's devices) are returned
+// here; per-device open errors surface from Open instead.
+//
+// Candidates are sorted by Key for a stable order; the caller decides
+// display order (LogiTux sorts opened devices by serial).
+func Discover(backend hid.Backend) ([]Candidate, []error) {
+	var candidates []Candidate
 	var errs []error
 
 	for _, p := range plugins {
+		open := p.open
 		for _, productID := range p.productIDs {
 			infos, err := backend.Enumerate(p.vendorID, productID)
 			if err != nil {
@@ -209,27 +231,29 @@ func Discover(backend hid.Backend) ([]Device, []error) {
 				continue
 			}
 			for _, info := range infos {
-				d, err := p.open(backend, info)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("device: open %s: %w", info.Path, err))
-					continue
-				}
-				if d == nil {
-					continue // OpenFunc chose to skip this node; not an error
-				}
-				devices = append(devices, d)
+				info := info
+				candidates = append(candidates, Candidate{
+					Key: info.Path,
+					Open: func() (Device, error) {
+						d, err := open(backend, info)
+						if err != nil {
+							return nil, fmt.Errorf("device: open %s: %w", info.Path, err)
+						}
+						return d, nil
+					},
+				})
 			}
 		}
 	}
 
 	for _, discover := range discoverers {
 		found, ferrs := discover()
-		devices = append(devices, found...)
+		candidates = append(candidates, found...)
 		errs = append(errs, ferrs...)
 	}
 
-	sort.Slice(devices, func(i, j int) bool {
-		return devices[i].Info().Serial < devices[j].Info().Serial
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Key < candidates[j].Key
 	})
-	return devices, errs
+	return candidates, errs
 }

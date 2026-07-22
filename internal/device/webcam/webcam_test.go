@@ -8,8 +8,29 @@ import (
 	"path/filepath"
 	"testing"
 
+	"logitux/internal/device"
 	"logitux/internal/v4l2"
 )
+
+// openAll2 resolves discover()'s candidates into opened devices, the way
+// appState.refresh does: skip nil results and combine enumeration errors
+// with per-candidate open errors. Takes discover()'s two return values so
+// call sites can write openAll2(discover()).
+func openAll2(candidates []device.Candidate, enumErrs []error) ([]device.Device, []error) {
+	devices := []device.Device{}
+	errs := append([]error(nil), enumErrs...)
+	for _, c := range candidates {
+		d, err := c.Open()
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if d != nil {
+			devices = append(devices, d)
+		}
+	}
+	return devices, errs
+}
 
 // fakeControlDevice fakes the V4L2 side of one /dev/videoN node.
 type fakeControlDevice struct {
@@ -103,7 +124,7 @@ func TestDiscover(t *testing.T) {
 		"video1": {caps: 0x00800000 /* metadata */, controls: c922Controls(), values: map[uint32]int32{}},
 	})
 
-	devices, errs := discover()
+	devices, errs := openAll2(discover())
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v", errs)
 	}
@@ -121,7 +142,7 @@ func TestDiscover(t *testing.T) {
 
 func TestDiscoverNoSysfs(t *testing.T) {
 	withFakes(t, filepath.Join(t.TempDir(), "missing"), nil)
-	devices, errs := discover()
+	devices, errs := openAll2(discover())
 	if len(devices) != 0 || len(errs) != 0 {
 		t.Errorf("devices=%v errs=%v, want none", devices, errs)
 	}
@@ -136,7 +157,7 @@ func TestControls(t *testing.T) {
 	}}
 	withFakes(t, root, map[string]*fakeControlDevice{"video0": fake})
 
-	devices, _ := discover()
+	devices, _ := openAll2(discover())
 	if len(devices) != 1 {
 		t.Fatal("no device")
 	}
@@ -190,7 +211,7 @@ func TestSerialFallsBackToNode(t *testing.T) {
 	withFakes(t, root, map[string]*fakeControlDevice{
 		"video0": {caps: v4l2.CapVideoCapture, controls: c922Controls(), values: map[uint32]int32{}},
 	})
-	devices, _ := discover()
+	devices, _ := openAll2(discover())
 	if len(devices) != 1 {
 		t.Fatal("no device")
 	}

@@ -2,10 +2,34 @@ package device
 
 import (
 	"errors"
+	"sort"
 	"testing"
 
 	"logitux/internal/hid"
 )
+
+// openAll resolves the candidates from Discover into opened devices,
+// mirroring what appState.refresh does: skip nil results, collect open
+// errors, and sort the survivors by serial.
+func openAll(candidates []Candidate) ([]Device, []error) {
+	var devices []Device
+	var errs []error
+	for _, c := range candidates {
+		d, err := c.Open()
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if d == nil {
+			continue
+		}
+		devices = append(devices, d)
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		return devices[i].Info().Serial < devices[j].Info().Serial
+	})
+	return devices, errs
+}
 
 type fakeBackend struct {
 	infos    map[uint16][]hid.Info // keyed by productID
@@ -43,7 +67,9 @@ func TestDiscoverOpensMatchingDevices(t *testing.T) {
 		},
 	}
 
-	devices, errs := Discover(backend)
+	candidates, errs := Discover(backend)
+	devices, openErrs := openAll(candidates)
+	errs = append(errs, openErrs...)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -74,12 +100,50 @@ func TestDiscoverCollectsOpenErrorsWithoutFailingOthers(t *testing.T) {
 		},
 	}
 
-	devices, errs := Discover(backend)
+	candidates, errs := Discover(backend)
+	devices, openErrs := openAll(candidates)
+	errs = append(errs, openErrs...)
 	if len(devices) != 1 || devices[0].Info().Serial != "GOOD" {
 		t.Fatalf("expected 1 device (GOOD), got %+v", devices)
 	}
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+}
+
+func TestDiscoverDefersOpen(t *testing.T) {
+	plugins = nil
+	opens := 0
+	Register(0x046d, []uint16{0xc900}, func(backend hid.Backend, info hid.Info) (Device, error) {
+		opens++
+		return &fakeDevice{info: Info{Serial: info.Serial}}, nil
+	})
+
+	backend := &fakeBackend{infos: map[uint16][]hid.Info{
+		0xc900: {
+			{Path: "/dev/hidraw0", VendorID: 0x046d, ProductID: 0xc900, Serial: "X"},
+			{Path: "/dev/hidraw1", VendorID: 0x046d, ProductID: 0xc900, Serial: "Y"},
+		},
+	}}
+
+	candidates, errs := Discover(backend)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	// The whole point of the candidate split: enumerating must not open
+	// anything (that's what let refresh reopen a wireless device every
+	// tick and hang). Opening happens only on demand.
+	if opens != 0 {
+		t.Fatalf("Discover opened %d devices before Open was called; want 0", opens)
+	}
+	if _, err := candidates[0].Open(); err != nil {
+		t.Fatal(err)
+	}
+	if opens != 1 {
+		t.Fatalf("after one Open, opens = %d; want 1", opens)
 	}
 }
 
@@ -104,7 +168,9 @@ func TestDiscoverSkipsNilNilWithoutError(t *testing.T) {
 		},
 	}
 
-	devices, errs := Discover(backend)
+	candidates, errs := Discover(backend)
+	devices, openErrs := openAll(candidates)
+	errs = append(errs, openErrs...)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
