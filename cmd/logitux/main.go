@@ -46,8 +46,18 @@ type appState struct {
 	// since it has a submenu per connected device.
 	trayApp desktop.App
 
-	mu      sync.Mutex
-	current map[string]device.Device // keyed by serial
+	mu sync.Mutex
+	// current holds every open device, keyed by its Candidate.Key (a
+	// stable per-interface identity, e.g. the /dev node path) rather than
+	// its serial — serials aren't always unique or even present, and the
+	// key is what lets refresh reuse an already-open device instead of
+	// reopening it.
+	current map[string]device.Device
+	// skip holds keys that enumerate as present but shouldn't be (re)opened:
+	// interfaces that opened to no device (a receiver's non-primary node)
+	// or that errored. Cleared for a key once it disappears, so a replug
+	// retries. Prevents a per-tick open storm on those nodes.
+	skip map[string]bool
 
 	// selectedSerial is the serial of the device whose page is open, or
 	// "" when the dashboard (the home screen) is showing. It survives
@@ -97,6 +107,7 @@ func main() {
 		backend:     hid.Default,
 		store:       store,
 		current:     make(map[string]device.Device),
+		skip:        make(map[string]bool),
 		pageSection: make(map[string]string),
 	}
 
@@ -124,34 +135,61 @@ func main() {
 	state.closeAll()
 }
 
-// refresh re-enumerates hidraw devices, opens newly connected ones, closes
-// handles for devices that disappeared, and rebuilds the device list UI.
-// Safe to call from any goroutine.
+// refresh re-enumerates connected devices, opens newly connected ones,
+// closes handles for devices that disappeared, and rebuilds the UI. It
+// deliberately does NOT reopen devices it already holds: enumeration is
+// cheap (device.Discover returns candidates without opening them), and
+// re-opening a wireless HID++ device every tick floods it with a fresh
+// feature-discovery burst on a second hidraw fd, which stalls the live
+// connection — that was what made opening the headset hang. Safe to call
+// from any goroutine.
 func (a *appState) refresh() {
-	discovered, errs := device.Discover(a.backend)
+	candidates, errs := device.Discover(a.backend)
 	for _, err := range errs {
 		log.Printf("logitux: %v", err)
 	}
 
-	a.mu.Lock()
-	bySerial := make(map[string]device.Device, len(discovered))
-	for _, d := range discovered {
-		bySerial[d.Info().Serial] = d
+	present := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		present[c.Key] = true
 	}
 
-	for serial, d := range a.current {
-		if _, stillPresent := bySerial[serial]; !stillPresent {
+	a.mu.Lock()
+	// Close devices whose interface disappeared, and forget stale skip
+	// marks so a replug of the same node is retried.
+	for key, d := range a.current {
+		if !present[key] {
 			d.Close()
-			delete(a.current, serial)
+			delete(a.current, key)
 		}
 	}
+	for key := range a.skip {
+		if !present[key] {
+			delete(a.skip, key)
+		}
+	}
+
+	// Open only interfaces we don't already hold (and haven't marked as
+	// non-openable).
 	var newlyOpened []device.Device
-	for serial, d := range bySerial {
-		if _, alreadyOpen := a.current[serial]; alreadyOpen {
-			d.Close() // Discover opened a fresh handle; we already have one
+	for _, c := range candidates {
+		if _, alreadyOpen := a.current[c.Key]; alreadyOpen {
 			continue
 		}
-		a.current[serial] = d
+		if a.skip[c.Key] {
+			continue
+		}
+		d, err := c.Open()
+		if err != nil {
+			log.Printf("logitux: %v", err)
+			a.skip[c.Key] = true // don't retry every tick; a replug clears it
+			continue
+		}
+		if d == nil {
+			a.skip[c.Key] = true // e.g. a receiver's non-primary hidraw node
+			continue
+		}
+		a.current[c.Key] = d
 		newlyOpened = append(newlyOpened, d)
 	}
 
