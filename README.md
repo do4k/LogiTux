@@ -10,7 +10,7 @@ On Linux, LogiTux talks to hardware directly over the `hidraw` interface
 needs a Go toolchain and Fyne's usual GUI build dependencies.
 
 ![LogiTux's Dashboard, styled after Logitech G HUB: one dark card per connected device with a product render (original artwork, not Logitech's — see Credit), battery level, and a settings button](images/screenshot-dashboard.png)
-![LogiTux's device page for a G Pro Wireless: product render and name in the header, then DPI and battery controls](images/screenshot-mouse.png)
+![LogiTux's device page for a G Pro Wireless: a row of DPI stage presets and report rate in the panel, with a DPI Speeds track plotting each stage in the showcase](images/screenshot-mouse.png)
 ![LogiTux's Litra Glow page: a power pill, temperature and brightness gradient sliders, and a render whose halo follows the light's state](images/screenshot-litra.png)
 ![LogiTux's C922 page: zoom slider, pan/tilt position pad, and autofocus/auto-exposure pills with their manual sliders](images/screenshot-webcam.png)
 
@@ -53,10 +53,15 @@ Sensitivity (DPI, report rate), Assignments (button remapping), Lighting
 (power, brightness, color temperature, RGB logo color), and Sound
 (sidetone, equalizer) — and only the sections a device actually supports
 appear. The panel beside the rail holds the selected section's controls,
-and the rest of the page shows the battery level and a large product
-render. On a light's page, the render actually glows, like G HUB's Litra
-page: a halo behind it follows the power pill and the temperature and
-brightness gradient sliders live. The selected section sticks across
+and the rest of the page shows the battery level and a section-specific
+showcase. On a mouse's Sensitivity section, DPI is presented as G HUB's
+**DPI stages**: a row of preset buttons (the active one highlighted;
+click to switch the mouse to that DPI), with a *DPI Speeds* track in the
+showcase plotting each stage as a dot along a non-linear axis. On a
+headset's page the showcase is the vertical ADVANCED EQ; on a light's
+page the product render actually glows, like G HUB's Litra page — a halo
+behind it follows the power pill and the temperature and brightness
+gradient sliders live. The selected section sticks across
 LogiTux's periodic re-polling
 rather than snapping back to the first every few seconds. A system
 tray icon offers quick per-device actions (power, DPI presets) without

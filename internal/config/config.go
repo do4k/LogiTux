@@ -20,11 +20,18 @@ type DeviceState struct {
 	Brightness  int  `json:"brightness"`
 	Temperature int  `json:"temperature"`
 
-	DPI        int  `json:"dpi,omitempty"`
-	ReportRate int  `json:"report_rate,omitempty"`
-	Red        byte `json:"red,omitempty"`
-	Green      byte `json:"green,omitempty"`
-	Blue       byte `json:"blue,omitempty"`
+	DPI        int `json:"dpi,omitempty"`
+	ReportRate int `json:"report_rate,omitempty"`
+
+	// DPIStages are the user's DPI presets ("stages") for a mouse, the
+	// quick-pick values shown on the Sensitivity page. The hardware
+	// exposes only a single current DPI (device.DPIControl); the stage
+	// list is a LogiTux convenience, persisted here. Empty means "use the
+	// defaults derived from the device's DPI range".
+	DPIStages []int `json:"dpi_stages,omitempty"`
+	Red       byte  `json:"red,omitempty"`
+	Green     byte  `json:"green,omitempty"`
+	Blue      byte  `json:"blue,omitempty"`
 
 	// ButtonRemaps maps a device-defined control ID to the uinput target
 	// code (see internal/uinput.Targets) it's remapped to. Absent entries

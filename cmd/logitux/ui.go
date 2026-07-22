@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"math"
+	"sort"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -94,10 +96,9 @@ func buildDevicePage(a *appState, devices []device.Device, d device.Device) fyne
 		glow = newLightGlow(saved)
 	}
 
-	showcase := deviceShowcase(a, d, glow)
-	sections := deviceSections(a, d, glow)
+	sections := deviceSections(a, d, glow, devices)
 	if len(sections) == 0 {
-		return container.NewBorder(topBar, nil, nil, nil, showcase)
+		return container.NewBorder(topBar, nil, nil, nil, deviceShowcase(a, d, glow, ""))
 	}
 
 	// Restore this device's previously selected section across rebuilds,
@@ -109,6 +110,11 @@ func buildDevicePage(a *appState, devices []device.Device, d device.Device) fyne
 		}
 	}
 	a.pageSection[info.Serial] = sections[selected].id
+
+	// The showcase is section-aware (e.g. a mouse shows its DPI-stages
+	// track on the Sensitivity section, the product render elsewhere), so
+	// it's built after the selected section is known.
+	showcase := deviceShowcase(a, d, glow, sections[selected].id)
 
 	railButtons := make([]fyne.CanvasObject, len(sections))
 	for i, s := range sections {
@@ -221,12 +227,14 @@ func kelvinColor(kelvin int) color.NRGBA {
 
 // deviceShowcase fills a device page's main area, G HUB-style: battery
 // level (and serial) in the top-left corner, and — under a faded
-// oversized product name — either the device's equalizer (G HUB gives
-// headsets' ADVANCED EQ the main area, in place of the render) or a
-// large product render. glow, non-nil only for lights, is layered behind
+// oversized product name — a feature that depends on the device and the
+// selected section: a mouse's DPI-stages track on the Sensitivity
+// section, a headset's ADVANCED EQ, a light's glowing render, or the
+// plain product render. glow, non-nil only for lights, is layered behind
 // the render.
-func deviceShowcase(a *appState, d device.Device, glow *lightGlow) fyne.CanvasObject {
+func deviceShowcase(a *appState, d device.Device, glow *lightGlow, sectionID string) fyne.CanvasObject {
 	info := d.Info()
+	saved, _ := a.store.Get(info.Serial)
 
 	var infoRows []fyne.CanvasObject
 	if bs, ok := d.(device.BatteryStatus); ok {
@@ -261,8 +269,11 @@ func deviceShowcase(a *appState, d device.Device, glow *lightGlow) fyne.CanvasOb
 	}
 
 	var feature fyne.CanvasObject
-	if eq, ok := d.(device.EqualizerControl); ok && len(eq.EqualizerBands()) > 0 {
-		saved, _ := a.store.Get(info.Serial)
+	if dpi, ok := loadDPIStages(a, d, saved); ok && sectionID == "sensitivity" {
+		// G HUB gives the Sensitivity view's main area to the DPI Speeds
+		// track, in place of the product render.
+		feature = dpiTrackShowcase(dpi)
+	} else if eq, ok := d.(device.EqualizerControl); ok && len(eq.EqualizerBands()) > 0 {
 		feature = equalizerShowcase(a, eq, info, info.Serial, saved, eq.EqualizerBands())
 	} else {
 		art := canvas.NewImageFromResource(artForDevice(info))
@@ -291,7 +302,7 @@ func deviceShowcase(a *appState, d device.Device, glow *lightGlow) fyne.CanvasOb
 // are set directly on the widget fields — not via SetValue/SetChecked —
 // so seeding the UI never sends a command to the device before the user
 // interacts with it.
-func deviceSections(a *appState, d device.Device, glow *lightGlow) []pageSection {
+func deviceSections(a *appState, d device.Device, glow *lightGlow, devices []device.Device) []pageSection {
 	info := d.Info()
 	serial := info.Serial
 	saved, _ := a.store.Get(serial)
@@ -302,7 +313,7 @@ func deviceSections(a *appState, d device.Device, glow *lightGlow) []pageSection
 			sections = append(sections, pageSection{id: id, icon: icon, body: body})
 		}
 	}
-	add("sensitivity", sensitivityIcon, sensitivityPanel(a, d, info, serial, saved))
+	add("sensitivity", sensitivityIcon, sensitivityPanel(a, d, info, serial, saved, devices))
 	add("assignments", assignmentsIcon, assignmentsPanel(a, d, info, serial, saved))
 	add("lighting", lightingIcon, lightingPanel(a, d, info, serial, saved, glow))
 	add("sound", soundIcon, soundPanel(a, d, info, serial, saved))
@@ -445,9 +456,203 @@ func togglePill(captionText string, initial bool, apply func(on bool) error, onC
 
 // --- capability panels -----------------------------------------------------
 
+// --- DPI stages ------------------------------------------------------------
+
+// A mouse exposes only a single current DPI (device.DPIControl). DPI
+// "stages" are LogiTux's client-side presets over that — G HUB's DPI
+// stages — a set of quick-pick values persisted per device
+// (config.DeviceState.DPIStages). Clicking a stage sets the device to
+// that DPI.
+type dpiStages struct {
+	min, max, step int
+	stages         []int // ascending, distinct, within [min,max]
+	active         int   // the current device DPI
+}
+
+// dpiStagePresets are the default stage values, used (filtered to the
+// device's range) until the user's own set is persisted.
+var dpiStagePresets = []int{400, 800, 1600, 3200, 6400, 12800, 25600}
+
+func defaultDPIStages(min, max int) []int {
+	var s []int
+	for _, v := range dpiStagePresets {
+		if v >= min && v <= max {
+			s = append(s, v)
+		}
+	}
+	if len(s) < 2 {
+		s = []int{min, max}
+	}
+	return s
+}
+
+// sanitizeStages clamps values into [min,max], drops duplicates, and
+// sorts ascending, falling back to the defaults if nothing usable
+// remains.
+func sanitizeStages(in []int, min, max int) []int {
+	seen := make(map[int]bool, len(in))
+	var out []int
+	for _, v := range in {
+		if v < min {
+			v = min
+		}
+		if v > max {
+			v = max
+		}
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sort.Ints(out)
+	if len(out) == 0 {
+		return defaultDPIStages(min, max)
+	}
+	return out
+}
+
+// loadDPIStages resolves a device's DPI stages: its saved set (or the
+// defaults for its range), plus its live/last-known current DPI as the
+// active stage. The active value is always represented in the stage list
+// so the UI can highlight it — even if it isn't one of the presets (e.g.
+// a value carried over from an earlier build's free slider). Returns
+// ok=false for devices without DPI control.
+func loadDPIStages(a *appState, d device.Device, saved config.DeviceState) (dpiStages, bool) {
+	dc, ok := d.(device.DPIControl)
+	if !ok {
+		return dpiStages{}, false
+	}
+	min, max, step := dc.DPIRange()
+
+	stages := saved.DPIStages
+	if len(stages) == 0 {
+		stages = defaultDPIStages(min, max)
+	}
+	stages = sanitizeStages(stages, min, max)
+
+	active := saved.DPI
+	if live, err := dc.DPI(); err == nil {
+		active = live // the device can report this, unlike e.g. brightness
+	}
+	if active <= 0 {
+		active = stages[0]
+	}
+	if active >= min && active <= max {
+		present := false
+		for _, v := range stages {
+			if v == active {
+				present = true
+				break
+			}
+		}
+		if !present {
+			stages = sanitizeStages(append(stages, active), min, max)
+		}
+	}
+
+	return dpiStages{min: min, max: max, step: step, stages: stages, active: active}, true
+}
+
+// dpiTrackShowcase renders the DPI Speeds track G HUB shows in the main
+// area: a horizontal axis from the device's min to max DPI with a dot per
+// stage (the active one accent-filled and labeled bold) and a few axis
+// ticks. Laid out with absolute positioning since it's a fixed-size
+// diagram, not a flowing form.
+func dpiTrackShowcase(dpi dpiStages) fyne.CanvasObject {
+	const (
+		w, h  = 520.0, 150.0
+		left  = 36.0
+		right = 36.0
+		baseY = 90.0
+	)
+	trackW := w - left - right
+	span := dpi.max - dpi.min
+	// A square-root axis, like G HUB's non-linear one: with a linear axis
+	// to a 25600 max, the commonly-used low DPIs (400–3200) all pile up at
+	// the far left. sqrt stretches the low end so every stage is legible.
+	xFrac := func(v int) float64 {
+		if span <= 0 {
+			return 0
+		}
+		return math.Sqrt(float64(v-dpi.min) / float64(span))
+	}
+	xFor := func(v int) float64 { return left + xFrac(v)*trackW }
+	capSize := theme.Size(theme.SizeNameCaptionText)
+	muted := color.NRGBA{R: 0x3a, G: 0x3a, B: 0x40, A: 0xff}
+
+	board := container.NewWithoutLayout()
+
+	baseline := canvas.NewRectangle(muted)
+	baseline.Move(fyne.NewPos(left, baseY))
+	baseline.Resize(fyne.NewSize(float32(trackW), 2))
+	board.Add(baseline)
+
+	// Axis ticks + value labels at a handful of evenly spaced x positions
+	// (their DPI values follow the same square-root mapping as the dots).
+	for i := 0; i <= 4; i++ {
+		frac := float64(i) / 4
+		val := dpi.min + int(frac*frac*float64(span))
+		x := left + frac*trackW
+		tick := canvas.NewRectangle(muted)
+		tick.Move(fyne.NewPos(float32(x), baseY+6))
+		tick.Resize(fyne.NewSize(1, 6))
+		board.Add(tick)
+
+		lbl := canvas.NewText(fmt.Sprintf("%d", val), colorSecondary)
+		lbl.TextSize = capSize
+		lw := fyne.MeasureText(lbl.Text, capSize, lbl.TextStyle).Width
+		lbl.Move(fyne.NewPos(float32(x)-lw/2, baseY+14))
+		board.Add(lbl)
+	}
+
+	// Stage dots + value labels.
+	for _, stage := range dpi.stages {
+		x := xFor(stage)
+		active := stage == dpi.active
+		r := float32(6)
+		dotColor := color.NRGBA{R: 0x8a, G: 0x8a, B: 0x90, A: 0xff}
+		if active {
+			r = 9
+			dotColor = colorAccent
+		}
+		dot := canvas.NewCircle(dotColor)
+		dot.Move(fyne.NewPos(float32(x)-r, baseY+1-r))
+		dot.Resize(fyne.NewSize(2*r, 2*r))
+		board.Add(dot)
+
+		txt := canvas.NewText(fmt.Sprintf("%d", stage), colorSecondary)
+		txt.TextSize = capSize
+		if active {
+			txt.Color = colorForeground
+			txt.TextStyle = fyne.TextStyle{Bold: true}
+		}
+		tw := fyne.MeasureText(txt.Text, txt.TextSize, txt.TextStyle).Width
+		txt.Move(fyne.NewPos(float32(x)-tw/2, baseY-32))
+		board.Add(txt)
+	}
+
+	board.Resize(fyne.NewSize(w, h))
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(w, h))
+
+	title := canvas.NewText("DPI Speeds", colorForeground)
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	title.TextSize = theme.Size(theme.SizeNameSubHeadingText)
+
+	return container.NewVBox(
+		container.NewCenter(title),
+		widget.NewLabel(""),
+		container.NewCenter(container.NewStack(sizer, board)),
+	)
+}
+
 // sensitivityPanel covers DPIControl and ReportRateControl, or nil if
-// the device has neither.
-func sensitivityPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState) fyne.CanvasObject {
+// the device has neither. DPI is presented as G HUB-style stages: a row
+// of preset buttons, the active one accent-filled; clicking one sets the
+// device to that DPI. devices is threaded through so a click can rebuild
+// the page (refreshing both the highlighted button and the showcase's
+// DPI track).
+func sensitivityPanel(a *appState, d device.Device, info device.Info, serial string, saved config.DeviceState, devices []device.Device) fyne.CanvasObject {
 	dc, hasDPI := d.(device.DPIControl)
 	rrc, hasRate := d.(device.ReportRateControl)
 	if !hasDPI && !hasRate {
@@ -456,28 +661,38 @@ func sensitivityPanel(a *appState, d device.Device, info device.Info, serial str
 
 	body := container.NewVBox(
 		panelHeading("Sensitivity (DPI)"),
-		panelNote("DPI is the speed of your mouse", "on the screen."),
+		panelNote("DPI is the speed of your mouse on", "the screen. Pick a DPI stage below —", "the active one is highlighted."),
 		widget.NewLabel(""), // breathing room, G HUB-style sparse panel
 	)
 
 	if hasDPI {
-		min, max, step := dc.DPIRange()
-		initial := saved.DPI
-		if live, err := dc.DPI(); err == nil {
-			initial = live // the device can report this, unlike e.g. brightness
-		}
-		if initial <= 0 {
-			initial = min
-		}
-		dpiSlider, _ := labeledSlider("DPI Speed", func(v int) string { return fmt.Sprintf("%d", v) },
-			initial, min, max, step, func(dpi int) {
-				if err := dc.SetDPI(dpi); err != nil {
+		dpi, _ := loadDPIStages(a, d, saved)
+		body.Add(panelCaption("DPI Speed"))
+
+		row := container.NewHBox()
+		for _, stage := range dpi.stages {
+			stage := stage
+			b := widget.NewButton(fmt.Sprintf("%d", stage), func() {
+				if err := dc.SetDPI(stage); err != nil {
 					log.Printf("logitux: set DPI on %s: %v", info.Name, err)
 					return
 				}
-				a.saveState(serial, func(s *config.DeviceState) { s.DPI = dpi })
+				a.saveState(serial, func(s *config.DeviceState) {
+					s.DPI = stage
+					s.DPIStages = dpi.stages // persist the stage set alongside the pick
+				})
+				// Rebuild so the highlighted stage and the showcase's DPI
+				// track both reflect the new active value.
+				a.window.SetContent(buildMainView(a, devices))
 			})
-		body.Add(dpiSlider)
+			if stage == dpi.active {
+				b.Importance = widget.HighImportance
+			} else {
+				b.Importance = widget.MediumImportance
+			}
+			row.Add(b)
+		}
+		body.Add(row)
 	}
 
 	if hasRate {
