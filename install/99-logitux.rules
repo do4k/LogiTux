@@ -10,8 +10,14 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c901", MODE="06
 
 # G Pro Wireless, via its Lightspeed USB receiver
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c539", MODE="0666"
-# G Pro Wireless, connected directly (wired/Bluetooth)
+# G Pro Wireless, connected directly over Bluetooth
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="4079", MODE="0666"
+# G Pro Wireless, connected via its USB charging/data cable (a distinct
+# product ID from the Bluetooth one above, not just an alternate path to it)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c088", MODE="0666"
+# PRO X Superlight / Superlight 2, connected directly
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c094", MODE="0666"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c09b", MODE="0666"
 
 # PRO X Wireless Gaming Headset
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="0aba", MODE="0666"

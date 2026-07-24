@@ -29,8 +29,15 @@ const (
 	// are typically paired to.
 	productReceiver uint16 = 0xc539
 	// productWired is the G Pro Wireless's own product ID when connected
-	// directly (wired or Bluetooth), addressed at HID++ device index 0xFF.
+	// directly over Bluetooth, addressed at HID++ device index 0xFF.
 	productWired uint16 = 0x4079
+	// productWiredUSB is the product ID the same mouse enumerates under
+	// when connected via its USB charging/data cable instead — a
+	// genuinely different USB device from productWired, not just an
+	// alternate path to it, confirmed against real hardware
+	// (046d:c088, "G Pro Wireless gaming mouse (wired mode)"). Also
+	// addressed at HID++ device index 0xFF like the other direct modes.
+	productWiredUSB uint16 = 0xc088
 	// Newer mice in the same family, connected directly. Product IDs per
 	// Solaar's descriptors; behind the Lightspeed receiver they enumerate
 	// under productReceiver like the G Pro Wireless does.
@@ -43,6 +50,7 @@ const (
 // when it does, its self-reported name wins (see buildMouse).
 var productNames = map[uint16]string{
 	productWired:       "G Pro Wireless",
+	productWiredUSB:    "G Pro Wireless",
 	productSuperlight:  "PRO X Superlight",
 	productSuperlight2: "PRO X Superlight 2",
 }
@@ -68,7 +76,7 @@ const (
 var probeTimeout = 300 * time.Millisecond
 
 func init() {
-	device.Register(vendorID, []uint16{productReceiver, productWired, productSuperlight, productSuperlight2}, open)
+	device.Register(vendorID, []uint16{productReceiver, productWired, productWiredUSB, productSuperlight, productSuperlight2}, open)
 }
 
 // Mouse is a device.Device for a connected G Pro Wireless.
@@ -131,7 +139,7 @@ func open(backend hid.Backend, info hid.Info) (device.Device, error) {
 	switch info.ProductID {
 	case productReceiver:
 		return openViaReceiver(backend, info)
-	case productWired, productSuperlight, productSuperlight2:
+	case productWired, productWiredUSB, productSuperlight, productSuperlight2:
 		return openDirect(backend, info)
 	default:
 		return nil, fmt.Errorf("gpro: unexpected product ID %04x", info.ProductID)

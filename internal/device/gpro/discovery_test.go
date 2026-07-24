@@ -178,6 +178,36 @@ func TestOpenDirectWiredMouse(t *testing.T) {
 	}
 }
 
+// TestOpenDirectUSBCableWiredMouse covers a real-world case: the mouse
+// connected via its USB charging/data cable enumerates under yet a
+// third product ID (0xc088, distinct from both the receiver and the
+// Bluetooth/direct 0x4079), confirmed against real hardware — it was
+// missing from the plugin's registered IDs entirely, so the mouse
+// simply didn't appear on the dashboard when cabled.
+func TestOpenDirectUSBCableWiredMouse(t *testing.T) {
+	fm := newFakeMouse()
+	backend := &fakeBackend{
+		responder: map[string]func([]byte) []byte{
+			"/dev/hidraw0": func(req []byte) []byte {
+				if req[1] != 0xff {
+					return nil
+				}
+				return fm.respond(req)
+			},
+		},
+	}
+
+	d, err := open(backend, hid.Info{Path: "/dev/hidraw0", VendorID: vendorID, ProductID: productWiredUSB, Serial: "USBCABLESN"})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+
+	if d.Info().Serial != "USBCABLESN" {
+		t.Errorf("expected the USB-cable connection to use the real USB serial, got %q", d.Info().Serial)
+	}
+}
+
 func TestOpenRejectsUnexpectedProductID(t *testing.T) {
 	backend := &fakeBackend{}
 	_, err := open(backend, hid.Info{Path: "/dev/hidraw0", VendorID: vendorID, ProductID: 0x9999})
