@@ -30,7 +30,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Version string shared by all build jobs: the tag without its leading "v",
-  # or 0.0.0 for untagged (branch/PR) builds.
+  # or a timestamp-based version for untagged (branch/PR) builds.
   # ---------------------------------------------------------------------------
   version:
     runs-on: ubuntu-latest
@@ -43,7 +43,8 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+            # For non-tag builds, use date-based version: YY.MM.dd-HHmm
+            echo "version=0.0.0-$(date -u +'%y.%m.%d-%H%M')" >> "$GITHUB_OUTPUT"
           fi
 
   # ---------------------------------------------------------------------------
@@ -145,11 +146,12 @@ jobs:
           path: dist/*.zip
 
   # ---------------------------------------------------------------------------
-  # On a version tag, gather every platform's artifacts into one GitHub Release.
+  # On a version tag or manual trigger, gather every platform's artifacts into
+  # one GitHub Release. Manual trigger creates a prerelease with a nightly tag.
   # ---------------------------------------------------------------------------
   release:
-    needs: [build-linux, build-windows, build-macos]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-windows, build-macos, version]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -159,3 +161,5 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('nightly-{0}', needs.version.outputs.version) }}
