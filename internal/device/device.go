@@ -12,6 +12,7 @@ package device
 
 import (
 	"fmt"
+	"image"
 	"sort"
 
 	"logitux/internal/hid"
@@ -173,6 +174,30 @@ type CameraControlSet interface {
 	CameraControls() []CameraControl
 	CameraControl(name string) (int, error)
 	SetCameraControl(name string, value int) error
+}
+
+// PreviewWidth and PreviewHeight are the resolution LogiTux's live
+// camera preview captures at. Shared between the webcam plugin (which
+// requests this from the hardware) and the GUI (which sizes its
+// placeholder frame to match, so there's no visible jump when the
+// first real frame arrives) — kept modest since this is a continuously
+// redecoded live settings preview, not a recording path.
+const (
+	PreviewWidth  = 640
+	PreviewHeight = 480
+)
+
+// Previewer is implemented by camera devices that can stream a live
+// video preview. StartPreview is idempotent — a no-op once already
+// streaming — since the GUI may call it repeatedly while a webcam's
+// page stays open across LogiTux's periodic rebuilds. Frame is a
+// fast, non-blocking read of whatever the capture loop has decoded
+// most recently; seq changes with every new frame so callers can tell
+// a fresh one from a stale one without comparing images.
+type Previewer interface {
+	StartPreview() error
+	StopPreview()
+	Frame() (img image.Image, seq uint64)
 }
 
 // OpenFunc opens a specific discovered hidraw device as a Device. Some

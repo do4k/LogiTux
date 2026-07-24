@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"log"
 	"math"
@@ -33,14 +34,31 @@ func loadingPlaceholder() fyne.CanvasObject {
 // screen is showing across rebuilds, and falls back to the dashboard if
 // the open device's page unplugs.
 func buildMainView(a *appState, devices []device.Device) fyne.CanvasObject {
+	stopInactivePreviews(a, devices)
 	if d := a.selectedDevice(devices); d != nil {
 		return buildDevicePage(a, devices, d)
 	}
 	a.selectedSerial = ""
+	a.previewer, a.previewImage = nil, nil
 	return buildDashboard(devices, func(index int) {
 		a.selectedSerial = devices[index].Info().Serial
 		a.window.SetContent(buildMainView(a, devices))
 	})
+}
+
+// stopInactivePreviews halts any webcam's live capture except the one
+// (if any) whose page is currently open. buildMainView runs on every
+// discovery tick as well as every navigation, so this is the one place
+// that reliably notices both "the user navigated away" and "the
+// selected device disappeared" — StartPreview/StopPreview are on
+// device.Previewer rather than tied to cameraPreviewShowcase's own
+// call lifecycle, since that rebuilds every tick regardless.
+func stopInactivePreviews(a *appState, devices []device.Device) {
+	for _, d := range devices {
+		if p, ok := d.(device.Previewer); ok && d.Info().Serial != a.selectedSerial {
+			p.StopPreview()
+		}
+	}
 }
 
 // selectedDevice resolves a.selectedSerial against the current device
@@ -275,6 +293,13 @@ func deviceShowcase(a *appState, d device.Device, glow *lightGlow, sectionID str
 		feature = dpiTrackShowcase(dpi)
 	} else if eq, ok := d.(device.EqualizerControl); ok && len(eq.EqualizerBands()) > 0 {
 		feature = equalizerShowcase(a, eq, info, info.Serial, saved, eq.EqualizerBands())
+	} else if p, ok := d.(device.Previewer); ok && (sectionID == "camera" || sectionID == "image") {
+		// G HUB shows the live feed itself on a webcam's Camera and Image
+		// pages, in place of the product render — both sections' controls
+		// (zoom/pan/tilt/focus/exposure, then brightness/contrast/
+		// saturation/sharpness) only make sense to tune while watching
+		// their effect.
+		feature = cameraPreviewShowcase(a, p, info)
 	} else {
 		art := canvas.NewImageFromResource(artForDevice(info))
 		art.FillMode = canvas.ImageFillContain
@@ -294,6 +319,42 @@ func deviceShowcase(a *appState, d device.Device, glow *lightGlow, sectionID str
 		layout.NewSpacer(),
 	)
 	return container.NewStack(center, corner)
+}
+
+// blankPreviewFrame is what the preview image shows before its first
+// real frame decodes — sized to the capture resolution so there's no
+// aspect-ratio jump once frames start arriving.
+func blankPreviewFrame() image.Image {
+	return image.NewRGBA(image.Rect(0, 0, device.PreviewWidth, device.PreviewHeight))
+}
+
+// cameraPreviewShowcase starts (or, on a rebuild, confirms) a webcam's
+// live capture and returns the image that displays it. The image's
+// pixels are kept current not here but by appState's preview ticker
+// (see tickPreview in main.go), which is what lets the feed update
+// smoothly between LogiTux's periodic full-page rebuilds instead of
+// only refreshing once every few seconds; this function's job is just
+// to make sure a.previewer/a.previewImage point at the thing currently
+// on screen.
+func cameraPreviewShowcase(a *appState, p device.Previewer, info device.Info) fyne.CanvasObject {
+	if err := p.StartPreview(); err != nil {
+		log.Printf("logitux: start preview on %s: %v", info.Name, err)
+		art := canvas.NewImageFromResource(artForDevice(info))
+		art.FillMode = canvas.ImageFillContain
+		art.SetMinSize(fyne.NewSize(340, 300))
+		return art
+	}
+
+	img := canvas.NewImageFromImage(blankPreviewFrame())
+	img.FillMode = canvas.ImageFillContain
+	img.SetMinSize(fyne.NewSize(480, 360))
+	if frame, seq := p.Frame(); frame != nil {
+		img.Image = frame
+		a.previewSeq = seq
+	}
+	a.previewer = p
+	a.previewImage = img
+	return img
 }
 
 // deviceSections assembles the page sections a device's capabilities

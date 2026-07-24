@@ -7,19 +7,25 @@
 // /sys/class/video4linux rather than a hidraw vendor/product match, and
 // talks to /dev/videoN through internal/v4l2.
 //
-// Only controls are supported (zoom, pan/tilt, focus, exposure, image
-// tuning); there is no video preview. Which controls exist is queried
+// Controls (zoom, pan/tilt, focus, exposure, image tuning) are queried
 // from the driver per device, not assumed — the GUI renders whatever is
-// reported, exactly like the headset equalizer's band layout.
+// reported, exactly like the headset equalizer's band layout. It also
+// implements device.Previewer, streaming a live preview over the same
+// fd via internal/v4l2's mmap capture support.
 package webcam
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"logitux/internal/device"
 	"logitux/internal/v4l2"
@@ -52,7 +58,21 @@ type controlDevice interface {
 	Get(id uint32) (int32, error)
 	Set(id uint32, value int32) error
 	Close() error
+
+	SetFormat(width, height int, pixelFormat uint32) (v4l2.Format, error)
+	GetFormat() (v4l2.Format, error)
+	RequestBuffers(count int) (int, error)
+	MapBuffer(index int) ([]byte, error)
+	UnmapBuffer(mem []byte) error
+	QueueBuffer(index int) error
+	DequeueBuffer() (index, bytesUsed int, err error)
+	StreamOn() error
+	StreamOff() error
 }
+
+// previewBufferCount is how many mmap buffers the capture ring uses;
+// the driver may grant fewer.
+const previewBufferCount = 4
 
 func init() {
 	device.RegisterDiscoverer(discover)
@@ -221,12 +241,27 @@ type Webcam struct {
 	info     device.Info
 	controls []device.CameraControl
 	ids      map[string]uint32
+
+	// previewMu guards the streaming state below, since the capture
+	// goroutine started by StartPreview writes frame/frameSeq while the
+	// GUI's preview ticker concurrently calls Frame.
+	previewMu sync.Mutex
+	streaming bool
+	buffers   [][]byte
+	frame     image.Image
+	frameSeq  uint64
+	stopped   chan struct{} // closed by capture() when it exits
 }
 
 var _ device.CameraControlSet = (*Webcam)(nil)
+var _ device.Previewer = (*Webcam)(nil)
 
 func (w *Webcam) Info() device.Info { return w.info }
-func (w *Webcam) Close() error      { return w.dev.Close() }
+
+func (w *Webcam) Close() error {
+	w.StopPreview()
+	return w.dev.Close()
+}
 
 func (w *Webcam) CameraControls() []device.CameraControl {
 	return append([]device.CameraControl(nil), w.controls...)
@@ -263,4 +298,176 @@ func (w *Webcam) SetCameraControl(name string, value int) error {
 		}
 	}
 	return w.dev.Set(id, int32(value))
+}
+
+// StartPreview begins capturing frames for a live preview, negotiating
+// MJPEG (falling back to whatever the driver substitutes, e.g. YUYV —
+// see decodeFrame) at device.PreviewWidth x device.PreviewHeight and
+// setting up an mmap buffer ring. Idempotent: the GUI's page rebuilds
+// every few seconds while a webcam's page is open, and this is a no-op
+// on every call after the first.
+func (w *Webcam) StartPreview() error {
+	w.previewMu.Lock()
+	defer w.previewMu.Unlock()
+	if w.streaming {
+		return nil
+	}
+
+	format, err := w.dev.SetFormat(device.PreviewWidth, device.PreviewHeight, v4l2.PixFmtMJPEG)
+	if err != nil {
+		// Some drivers — and V4L2 compatibility shims some desktops put
+		// in front of the real device, e.g. PipeWire's — refuse to
+		// renegotiate the format at all (ENOTTY), but still report
+		// whatever's already active via G_FMT. Use that rather than
+		// giving up outright, if it's something we can decode.
+		fallback, gErr := w.dev.GetFormat()
+		if gErr != nil {
+			return fmt.Errorf("webcam: set preview format on %s: %w", w.info.Name, err)
+		}
+		format = fallback
+	}
+	if format.PixelFormat != v4l2.PixFmtMJPEG && format.PixelFormat != v4l2.PixFmtYUYV {
+		return fmt.Errorf("webcam: %s has no usable preview pixel format (negotiated %#x)", w.info.Name, format.PixelFormat)
+	}
+
+	granted, err := w.dev.RequestBuffers(previewBufferCount)
+	if err != nil {
+		return fmt.Errorf("webcam: request preview buffers on %s: %w", w.info.Name, err)
+	}
+	if granted == 0 {
+		return fmt.Errorf("webcam: %s granted no preview buffers", w.info.Name)
+	}
+
+	buffers := make([][]byte, granted)
+	for i := range buffers {
+		mem, err := w.dev.MapBuffer(i)
+		if err != nil {
+			releaseBuffers(w.dev, buffers[:i])
+			return fmt.Errorf("webcam: map preview buffer %d on %s: %w", i, w.info.Name, err)
+		}
+		buffers[i] = mem
+		if err := w.dev.QueueBuffer(i); err != nil {
+			releaseBuffers(w.dev, buffers)
+			return fmt.Errorf("webcam: queue preview buffer %d on %s: %w", i, w.info.Name, err)
+		}
+	}
+
+	if err := w.dev.StreamOn(); err != nil {
+		releaseBuffers(w.dev, buffers)
+		return fmt.Errorf("webcam: stream on %s: %w", w.info.Name, err)
+	}
+
+	w.buffers = buffers
+	w.streaming = true
+	w.stopped = make(chan struct{})
+	go w.capture(format, w.buffers, w.stopped)
+	return nil
+}
+
+// releaseBuffers unmaps every non-nil buffer, best-effort, for
+// StartPreview's rollback on a mid-setup failure.
+func releaseBuffers(dev controlDevice, buffers [][]byte) {
+	for _, b := range buffers {
+		if b != nil {
+			dev.UnmapBuffer(b)
+		}
+	}
+}
+
+// capture runs on its own goroutine for the lifetime of one preview
+// session: dequeue a filled buffer, decode it, requeue, repeat. It
+// exits when DequeueBuffer errors, which is what StopPreview's
+// StreamOff call causes to happen to a pending DQBUF — see StreamOff's
+// doc comment in internal/v4l2. buffers and format are passed in
+// (rather than read from w) so this goroutine never has to touch
+// w.buffers, which StopPreview clears and reassigns.
+func (w *Webcam) capture(format v4l2.Format, buffers [][]byte, stopped chan struct{}) {
+	defer close(stopped)
+	for {
+		index, n, err := w.dev.DequeueBuffer()
+		if err != nil {
+			return
+		}
+		if index >= 0 && index < len(buffers) {
+			if img, err := decodeFrame(buffers[index][:n], format); err == nil {
+				w.previewMu.Lock()
+				w.frame = img
+				w.frameSeq++
+				w.previewMu.Unlock()
+			}
+		}
+		if err := w.dev.QueueBuffer(index); err != nil {
+			return
+		}
+	}
+}
+
+// StopPreview halts capture and releases the streaming buffers. Safe
+// to call whether or not a preview is running.
+func (w *Webcam) StopPreview() {
+	w.previewMu.Lock()
+	if !w.streaming {
+		w.previewMu.Unlock()
+		return
+	}
+	w.streaming = false
+	stopped := w.stopped
+	buffers := w.buffers
+	w.buffers = nil
+	w.frame = nil
+	w.previewMu.Unlock()
+
+	if err := w.dev.StreamOff(); err != nil {
+		log.Printf("webcam: stream off %s: %v", w.info.Name, err)
+	}
+	<-stopped // wait for capture() to stop touching buffers before unmapping them
+	releaseBuffers(w.dev, buffers)
+	if _, err := w.dev.RequestBuffers(0); err != nil {
+		log.Printf("webcam: release preview buffers on %s: %v", w.info.Name, err)
+	}
+}
+
+// Frame returns the most recently decoded preview frame and a sequence
+// number that changes with each new one, or (nil, 0) before the first
+// frame has decoded.
+func (w *Webcam) Frame() (image.Image, uint64) {
+	w.previewMu.Lock()
+	defer w.previewMu.Unlock()
+	return w.frame, w.frameSeq
+}
+
+// decodeFrame turns one captured frame's raw bytes into an image.Image,
+// according to whichever pixel format StartPreview actually negotiated.
+func decodeFrame(data []byte, format v4l2.Format) (image.Image, error) {
+	switch format.PixelFormat {
+	case v4l2.PixFmtMJPEG:
+		return jpeg.Decode(bytes.NewReader(data))
+	case v4l2.PixFmtYUYV:
+		return decodeYUYV(data, format.Width, format.Height)
+	default:
+		return nil, fmt.Errorf("webcam: unsupported preview pixel format %#x", format.PixelFormat)
+	}
+}
+
+// decodeYUYV converts a packed YUYV (YUY2) frame — two pixels per
+// 4-byte macropixel, sharing one Cb/Cr sample — into an image.YCbCr,
+// for the drivers/resolutions that don't offer MJPEG.
+func decodeYUYV(data []byte, width, height int) (image.Image, error) {
+	if width <= 0 || height <= 0 || len(data) < width*height*2 {
+		return nil, fmt.Errorf("webcam: short YUYV frame: %d bytes for %dx%d", len(data), width, height)
+	}
+	img := image.NewYCbCr(image.Rect(0, 0, width, height), image.YCbCrSubsampleRatio422)
+	for y := 0; y < height; y++ {
+		row := data[y*width*2:]
+		for x := 0; x+1 < width; x += 2 {
+			o := x * 2
+			y0, u, y1, v := row[o], row[o+1], row[o+2], row[o+3]
+			img.Y[img.YOffset(x, y)] = y0
+			img.Y[img.YOffset(x+1, y)] = y1
+			ci := img.COffset(x, y)
+			img.Cb[ci] = u
+			img.Cr[ci] = v
+		}
+	}
+	return img, nil
 }

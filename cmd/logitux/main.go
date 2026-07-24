@@ -13,6 +13,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 
@@ -30,6 +31,12 @@ import (
 )
 
 const discoveryInterval = 3 * time.Second
+
+// previewInterval paces repainting the live camera preview — much
+// faster than discoveryInterval, since a 3s cadence would make a
+// "live" feed an obvious slideshow. ~15fps is plenty for a settings
+// preview and keeps continuous JPEG decode cheap.
+const previewInterval = 66 * time.Millisecond
 
 // appState owns the set of currently-open devices and the widgets built
 // for them. Discover is called periodically to pick up hot-plugged
@@ -74,6 +81,19 @@ type appState struct {
 	// otherwise silently snap back to the first section out from under
 	// the user; same no-lock-needed reasoning as selectedSerial.
 	pageSection map[string]string
+
+	// previewer/previewImage/previewSeq belong to the live camera preview
+	// on a webcam's Camera/Image page (see cameraPreviewShowcase in
+	// ui.go): previewer is the device.Previewer whose frames should be
+	// painted into previewImage, and previewSeq is the sequence number
+	// last painted, so the preview ticker below only repaints on an
+	// actual new frame. Set from cameraPreviewShowcase, which — like
+	// buildMainView generally — only ever runs on the main/UI goroutine
+	// (a nav callback, or inside refresh's fyne.Do), so like
+	// selectedSerial these need no lock.
+	previewer    device.Previewer
+	previewImage *canvas.Image
+	previewSeq   uint64
 }
 
 func main() {
@@ -127,6 +147,14 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			state.refresh()
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(previewInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			state.tickPreview()
 		}
 	}()
 
@@ -212,6 +240,26 @@ func (a *appState) refresh() {
 	fyne.Do(func() {
 		a.window.SetContent(buildMainView(a, devices))
 		a.updateSystemTrayMenu(devices)
+	})
+}
+
+// tickPreview repaints the live camera preview, if a webcam's page is
+// open and has produced a frame since the last tick. Runs on its own
+// faster ticker than refresh's discovery-driven rebuilds (see
+// previewInterval) so the feed doesn't visibly stutter, and is a no-op
+// whenever no preview is showing.
+func (a *appState) tickPreview() {
+	fyne.Do(func() {
+		if a.previewer == nil || a.previewImage == nil {
+			return
+		}
+		img, seq := a.previewer.Frame()
+		if img == nil || seq == a.previewSeq {
+			return
+		}
+		a.previewSeq = seq
+		a.previewImage.Image = img
+		a.previewImage.Refresh()
 	})
 }
 

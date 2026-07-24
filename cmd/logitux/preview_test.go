@@ -8,6 +8,7 @@ package main
 
 import (
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -152,6 +153,21 @@ func (f *fakeWebcamDevice) SetCameraControl(name string, value int) error {
 	}
 	f.values[name] = value
 	return nil
+}
+
+// fakeWebcamDevice also implements device.Previewer with a synthetic
+// test-pattern frame, so the generated preview screenshot exercises
+// cameraPreviewShowcase's layout the same way a real webcam would.
+func (f *fakeWebcamDevice) StartPreview() error { return nil }
+func (f *fakeWebcamDevice) StopPreview()        {}
+func (f *fakeWebcamDevice) Frame() (image.Image, uint64) {
+	img := image.NewRGBA(image.Rect(0, 0, device.PreviewWidth, device.PreviewHeight))
+	for y := 0; y < device.PreviewHeight; y++ {
+		for x := 0; x < device.PreviewWidth; x++ {
+			img.Set(x, y, color.NRGBA{R: uint8(x), G: uint8(y), B: 0x80, A: 0xff})
+		}
+	}
+	return img, 1
 }
 
 func (f *fakeBattDevice) DPIRange() (int, int, int)    { return 100, 25600, 50 }
