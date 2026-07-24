@@ -99,6 +99,12 @@ type fakeHeadset struct {
 	eqDBRange int8
 	eqFreqs   []uint16
 	eqLevels  []int8
+
+	noiseReduction bool
+	// noNoiseReduction simulates firmware that predates the equalizer
+	// feature's noise-reduction functions: they answer with a HID++
+	// error instead.
+	noNoiseReduction bool
 }
 
 func newFakeHeadset() *fakeHeadset {
@@ -115,6 +121,7 @@ func newFakeHeadset() *fakeHeadset {
 		eqDBRange:      12,
 		eqFreqs:        []uint16{32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000},
 		eqLevels:       []int8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		noiseReduction: true,
 	}
 }
 
@@ -189,6 +196,18 @@ func (fh *fakeHeadset) respond(req []byte) []byte {
 				}
 				fh.eqLevels[i] = int8(params[1+i])
 			}
+		case eqFuncGetNoiseReduction & 0xf0:
+			if fh.noNoiseReduction {
+				return fh.errorResponse(deviceIndex, featureIndex, funcSwID)
+			}
+			if fh.noiseReduction {
+				resp[4] = 1
+			}
+		case eqFuncSetNoiseReduction & 0xf0:
+			if fh.noNoiseReduction {
+				return fh.errorResponse(deviceIndex, featureIndex, funcSwID)
+			}
+			fh.noiseReduction = params[0] != 0
 		default:
 			return fh.errorResponse(deviceIndex, featureIndex, funcSwID)
 		}
@@ -386,5 +405,60 @@ func TestSetEqualizerLevelsWrongCount(t *testing.T) {
 
 	if err := h.SetEqualizerLevels([]int{1, 2, 3}); err == nil {
 		t.Fatal("expected an error when the level count doesn't match the band count")
+	}
+}
+
+func TestNoiseReductionGetSet(t *testing.T) {
+	h, fh, _ := newTestHeadset(t)
+	defer h.Close()
+
+	on, err := h.NoiseReduction()
+	if err != nil {
+		t.Fatalf("NoiseReduction: %v", err)
+	}
+	if !on {
+		t.Error("expected noise reduction to start enabled")
+	}
+
+	if err := h.SetNoiseReduction(false); err != nil {
+		t.Fatalf("SetNoiseReduction(false): %v", err)
+	}
+	if fh.noiseReduction {
+		t.Error("device still has noise reduction enabled after disabling")
+	}
+
+	if err := h.SetNoiseReduction(true); err != nil {
+		t.Fatalf("SetNoiseReduction(true): %v", err)
+	}
+	on, err = h.NoiseReduction()
+	if err != nil {
+		t.Fatalf("NoiseReduction: %v", err)
+	}
+	if !on {
+		t.Error("noise reduction should read back enabled")
+	}
+}
+
+func TestNoiseReductionUnsupportedFirmware(t *testing.T) {
+	fh := newFakeHeadset()
+	fh.noNoiseReduction = true
+	handle := newFakeHandle()
+	handle.responder = fh.respond
+	conn := hidpp.Open(handle)
+
+	h, err := buildHeadset(conn, "TESTSN")
+	if err != nil {
+		conn.Close()
+		t.Fatalf("buildHeadset: %v", err)
+	}
+	defer h.Close()
+
+	// Firmware without functions 4/5 answers with a HID++ error; the
+	// plugin surfaces that as an error (and the GUI hides the toggle).
+	if _, err := h.NoiseReduction(); err == nil {
+		t.Fatal("expected an error from firmware without noise-reduction functions")
+	}
+	if err := h.SetNoiseReduction(true); err == nil {
+		t.Fatal("expected an error setting noise reduction on unsupported firmware")
 	}
 }

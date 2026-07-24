@@ -947,6 +947,25 @@ func soundPanel(a *appState, d device.Device, info device.Info, serial string, s
 		body.Add(sidetoneSlider)
 	}
 
+	// The toggle only appears if a live read succeeds: the control rides
+	// on the equalizer feature, and units whose firmware predates its
+	// functions answer the read with a HID++ error.
+	if nrc, ok := d.(device.NoiseReductionControl); ok {
+		if on, err := nrc.NoiseReduction(); err == nil {
+			body.Add(widget.NewLabel(""))
+			body.Add(togglePill("Mic Noise Reduction", on,
+				func(enable bool) error {
+					if err := nrc.SetNoiseReduction(enable); err != nil {
+						log.Printf("logitux: set noise reduction on %s: %v", info.Name, err)
+						return err
+					}
+					return nil
+				},
+				func(bool) {}, // hardware retains the state; nothing to persist
+			))
+		}
+	}
+
 	if hasEQ {
 		body.Add(widget.NewLabel(""))
 		body.Add(panelNote("The advanced EQ is on the right;", "changes apply immediately."))

@@ -14,15 +14,25 @@ const (
 	eqFuncGetBandFrequencies byte = 0x10
 	eqFuncGetLevels          byte = 0x20
 	eqFuncSetLevels          byte = 0x30
+	eqFuncGetNoiseReduction  byte = 0x40
+	eqFuncSetNoiseReduction  byte = 0x50
 )
 
-// eqGetLevelsPrefix/eqSetLevelsPrefix are fixed leading parameter bytes
-// the protocol requires for the get/set-levels calls (purpose undocumented
-// beyond "required prefix" in the reference implementation this was
-// verified against).
+// The get/set-levels calls take a leading selector byte. Originally these
+// were cargo-culted as "required prefix" from the reference implementation
+// this plugin was verified against; OpenLogi's 0x8310 implementation
+// documents their actual meaning:
+//
+//   - get: a gain *location* — 0 reads the custom EQ stored in EEPROM,
+//     1 reads the active EQ in RAM.
+//   - set: a gain *persistence* — 0 applies to RAM only (volatile),
+//     1 applies to RAM and stores to EEPROM, 2 stores to EEPROM only.
+//
+// The values themselves are unchanged from what was verified against real
+// hardware.
 const (
-	eqGetLevelsPrefix byte = 0x00
-	eqSetLevelsPrefix byte = 0x02
+	eqGainLocationEEPROM      byte = 0x00
+	eqPersistNonVolatileWrite byte = 0x02
 )
 
 // discoverEqualizer reads the device's fixed band layout (frequencies)
@@ -86,7 +96,7 @@ func (h *Headset) EqualizerLevels() ([]int, error) {
 	if h.eqFeatureIndex == 0 {
 		return nil, fmt.Errorf("prox: device has no equalizer feature")
 	}
-	resp, err := h.conn.Call(h.deviceIndex, h.eqFeatureIndex, eqFuncGetLevels, []byte{eqGetLevelsPrefix})
+	resp, err := h.conn.Call(h.deviceIndex, h.eqFeatureIndex, eqFuncGetLevels, []byte{eqGainLocationEEPROM})
 	if err != nil {
 		return nil, fmt.Errorf("prox: get equalizer levels: %w", err)
 	}
@@ -101,6 +111,40 @@ func (h *Headset) EqualizerLevels() ([]int, error) {
 	return levels, nil
 }
 
+// NoiseReduction implements device.NoiseReductionControl: whether the
+// headset's hardware microphone noise reduction is enabled. Functions
+// 4/5 of the same EQUALIZER feature; units whose firmware predates them
+// answer with a HID++ error, which callers treat as "not supported"
+// (the GUI probes with a read and hides the toggle on error).
+func (h *Headset) NoiseReduction() (bool, error) {
+	if h.eqFeatureIndex == 0 {
+		return false, fmt.Errorf("prox: device has no equalizer feature")
+	}
+	resp, err := h.conn.Call(h.deviceIndex, h.eqFeatureIndex, eqFuncGetNoiseReduction, nil)
+	if err != nil {
+		return false, fmt.Errorf("prox: get noise reduction: %w", err)
+	}
+	if len(resp) < 1 {
+		return false, fmt.Errorf("prox: short noise reduction response")
+	}
+	return resp[0] != 0, nil
+}
+
+// SetNoiseReduction implements device.NoiseReductionControl.
+func (h *Headset) SetNoiseReduction(enabled bool) error {
+	if h.eqFeatureIndex == 0 {
+		return fmt.Errorf("prox: device has no equalizer feature")
+	}
+	var v byte
+	if enabled {
+		v = 1
+	}
+	if _, err := h.conn.Call(h.deviceIndex, h.eqFeatureIndex, eqFuncSetNoiseReduction, []byte{v}); err != nil {
+		return fmt.Errorf("prox: set noise reduction: %w", err)
+	}
+	return nil
+}
+
 // SetEqualizerLevels implements device.EqualizerControl.
 func (h *Headset) SetEqualizerLevels(levelsDB []int) error {
 	if h.eqFeatureIndex == 0 {
@@ -111,7 +155,7 @@ func (h *Headset) SetEqualizerLevels(levelsDB []int) error {
 	}
 
 	params := make([]byte, 1+len(levelsDB))
-	params[0] = eqSetLevelsPrefix
+	params[0] = eqPersistNonVolatileWrite
 	for i, lvl := range levelsDB {
 		lvl = clamp(lvl, h.eqMinDB, h.eqMaxDB)
 		params[1+i] = byte(int8(lvl))
