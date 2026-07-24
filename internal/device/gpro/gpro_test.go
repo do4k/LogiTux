@@ -104,6 +104,22 @@ type fakeMouse struct {
 	buttonCIDs       []uint16
 	buttonDivertable map[uint16]bool
 	diverted         map[uint16]bool // last value set via setCidReporting, for test assertions
+
+	// Extended DPI (0x2202), used instead of featureAdjustableDPI on the
+	// fakes that simulate a newer mouse.
+	extDPICapabilities byte   // bit 0 = has independent Y axis
+	extDPIRangeStream  []byte // pre-encoded getSensorDpiRanges body (single page)
+	extDPICurrentX     uint16
+	extDPIDefaultX     uint16
+	extDPICurrentY     uint16
+	extDPILod          byte
+
+	// Extended report rate (0x8061), used instead of featureReportRate.
+	extRateBitmask uint16
+	extRateIndex   byte
+
+	// DEVICE_TYPE_AND_NAME (0x0005), the device's self-reported name.
+	deviceName string
 }
 
 func newFakeMouse() *fakeMouse {
@@ -297,10 +313,71 @@ func (fm *fakeMouse) respond(req []byte) []byte {
 			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
 		}
 
+	case fm.features[featureExtendedDPI]:
+		switch function {
+		case extDPIFuncGetSensorCapabilities & 0xf0:
+			resp[4] = params[0] // sensor index echo
+			resp[5] = 0         // dpi level count (unused by this plugin)
+			resp[6] = fm.extDPICapabilities
+		case extDPIFuncGetDpiRanges & 0xf0:
+			resp[4], resp[5], resp[6] = params[0], params[1], params[2] // echo sensor/direction/page
+			copy(resp[7:], fm.extDPIRangeStream)
+		case extDPIFuncGetDpiParameters & 0xf0:
+			resp[4] = params[0]
+			binary.BigEndian.PutUint16(resp[5:7], fm.extDPICurrentX)
+			binary.BigEndian.PutUint16(resp[7:9], fm.extDPIDefaultX)
+			binary.BigEndian.PutUint16(resp[9:11], fm.extDPICurrentY)
+			resp[13] = fm.extDPILod
+		case extDPIFuncSetDpiParameters & 0xf0:
+			fm.extDPICurrentX = binary.BigEndian.Uint16(params[1:3])
+			fm.extDPICurrentY = binary.BigEndian.Uint16(params[3:5])
+			fm.extDPILod = params[5]
+		default:
+			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
+		}
+
+	case fm.features[featureExtendedReportRate]:
+		switch function {
+		case extRateFuncGetRateList & 0xf0:
+			binary.BigEndian.PutUint16(resp[4:6], fm.extRateBitmask)
+		case extRateFuncGetRate & 0xf0:
+			resp[4] = fm.extRateIndex
+		case extRateFuncSetRate & 0xf0:
+			fm.extRateIndex = params[0]
+		default:
+			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
+		}
+
+	case fm.features[hidpp.FeatureDeviceTypeAndName]:
+		switch function {
+		case 0x00: // getDeviceNameCount
+			resp[4] = byte(len(fm.deviceName))
+		case 0x10: // getDeviceName
+			charIndex := int(params[0])
+			if charIndex < len(fm.deviceName) {
+				copy(resp[4:], fm.deviceName[charIndex:])
+			}
+		default:
+			return fm.errorResponse(deviceIndex, featureIndex, funcSwID)
+		}
+
 	default:
 		return fm.errorResponse(deviceIndex, featureIndex, funcSwID) // unknown feature index
 	}
 	return resp
+}
+
+// encodeExtDPIRangeStream builds a getSensorDpiRanges response body
+// (single page: one fixed range plus the 0x0000 terminator) for from-to
+// step step, in the [value, hyphen|step, value] + terminator shape this
+// plugin's parser expects.
+func encodeExtDPIRangeStream(from, to uint16, step uint16) []byte {
+	words := []uint16{from, extDPIRangeHyphen | step, to, 0x0000}
+	buf := make([]byte, 2*len(words))
+	for i, w := range words {
+		binary.BigEndian.PutUint16(buf[2*i:2*i+2], w)
+	}
+	return buf
 }
 
 func (fm *fakeMouse) errorResponse(deviceIndex, featureIndex, funcSwID byte) []byte {
@@ -328,7 +405,7 @@ func newTestMouseFrom(t *testing.T, fm *fakeMouse) (*Mouse, *fakeMouse, *fakeHan
 	h.responder = fm.respond
 	conn := hidpp.Open(h)
 
-	m, err := buildMouse(conn, 0x01, "TESTSERIAL-1")
+	m, err := buildMouse(conn, 0x01, "TESTSERIAL-1", "G Pro Wireless", productWired)
 	if err != nil {
 		conn.Close()
 		t.Fatalf("buildMouse: %v", err)
@@ -361,7 +438,7 @@ func TestBuildMouseFailsWhenARequiredFeatureIsMissing(t *testing.T) {
 	conn := hidpp.Open(h)
 	defer conn.Close()
 
-	_, err := buildMouse(conn, 0x01, "SN")
+	_, err := buildMouse(conn, 0x01, "SN", "G Pro Wireless", productWired)
 	if err == nil {
 		t.Fatal("expected an error when a required feature is missing")
 	}
@@ -384,5 +461,174 @@ func TestBuildMouseToleratesMissingBattery(t *testing.T) {
 	// DPI should still work.
 	if _, err := m.DPI(); err != nil {
 		t.Errorf("expected DPI() to still work despite missing battery, got: %v", err)
+	}
+}
+
+// TestBuildMouseUsesExtendedDPI covers a mouse that implements
+// EXTENDED_ADJUSTABLE_DPI (0x2202) instead of the classic feature — the
+// PRO X Superlight family's actual situation, per OpenLogi.
+func TestBuildMouseUsesExtendedDPI(t *testing.T) {
+	fm := newFakeMouse()
+	delete(fm.features, featureAdjustableDPI)
+	fm.features[featureExtendedDPI] = 0x06
+	fm.extDPICapabilities = 0 // no independent Y axis
+	fm.extDPIRangeStream = encodeExtDPIRangeStream(100, 25600, 50)
+	fm.extDPICurrentX = 1600
+	fm.extDPIDefaultX = 800
+
+	m, _, _ := newTestMouseFrom(t, fm)
+	defer m.Close()
+
+	if m.dpiFeatureIndex != 0 || m.extDPIFeatureIndex != 0x06 {
+		t.Fatalf("expected only extDPIFeatureIndex resolved, got dpiFeatureIndex=%d extDPIFeatureIndex=%d", m.dpiFeatureIndex, m.extDPIFeatureIndex)
+	}
+
+	min, max, step := m.DPIRange()
+	if min != 100 || max != 25600 || step != 50 {
+		t.Errorf("DPIRange() = (%d, %d, %d), want (100, 25600, 50)", min, max, step)
+	}
+
+	dpi, err := m.DPI()
+	if err != nil {
+		t.Fatalf("DPI: %v", err)
+	}
+	if dpi != 1600 {
+		t.Errorf("DPI() = %d, want 1600", dpi)
+	}
+
+	if err := m.SetDPI(3200); err != nil {
+		t.Fatalf("SetDPI: %v", err)
+	}
+	if fm.extDPICurrentX != 3200 {
+		t.Errorf("device DPI = %d, want 3200", fm.extDPICurrentX)
+	}
+	if fm.extDPICurrentY != 0 {
+		t.Errorf("Y should stay 0 on a sensor without an independent Y axis, got %d", fm.extDPICurrentY)
+	}
+}
+
+// TestBuildMouseUsesExtendedDPIWithY covers a sensor that does support an
+// independent Y axis: SetDPI should apply the same value to both axes,
+// mirroring G HUB's default single-DPI-value behavior.
+func TestBuildMouseUsesExtendedDPIWithY(t *testing.T) {
+	fm := newFakeMouse()
+	delete(fm.features, featureAdjustableDPI)
+	fm.features[featureExtendedDPI] = 0x06
+	fm.extDPICapabilities = extDPICapHasY
+	fm.extDPIRangeStream = encodeExtDPIRangeStream(100, 25600, 50)
+
+	m, _, _ := newTestMouseFrom(t, fm)
+	defer m.Close()
+
+	if err := m.SetDPI(3200); err != nil {
+		t.Fatalf("SetDPI: %v", err)
+	}
+	if fm.extDPICurrentX != 3200 || fm.extDPICurrentY != 3200 {
+		t.Errorf("expected both axes set to 3200, got X=%d Y=%d", fm.extDPICurrentX, fm.extDPICurrentY)
+	}
+}
+
+// TestBuildMouseFailsWhenNeitherDPIFeatureExists mirrors
+// TestBuildMouseFailsWhenARequiredFeatureIsMissing for the extended path:
+// a device with neither 0x2201 nor 0x2202 still can't be used.
+func TestBuildMouseFailsWhenNeitherDPIFeatureExists(t *testing.T) {
+	fm := newFakeMouse()
+	delete(fm.features, featureAdjustableDPI)
+	h := newFakeHandle()
+	h.responder = fm.respond
+	conn := hidpp.Open(h)
+	defer conn.Close()
+
+	if _, err := buildMouse(conn, 0x01, "SN", "G Pro Wireless", productWired); err == nil {
+		t.Fatal("expected an error when neither DPI feature is present")
+	}
+}
+
+// TestBuildMouseUsesExtendedReportRate covers a mouse that implements
+// EXTENDED_ADJUSTABLE_REPORT_RATE (0x8061) instead of the classic
+// feature, including a rate (2000 Hz) the classic feature can't express.
+func TestBuildMouseUsesExtendedReportRate(t *testing.T) {
+	fm := newFakeMouse()
+	delete(fm.features, featureReportRate)
+	fm.features[featureExtendedReportRate] = 0x07
+	// Bits per extRateHz = [125,250,500,1000,2000,4000,8000]; set 1000 and 2000.
+	fm.extRateBitmask = 1<<3 | 1<<4
+	fm.extRateIndex = 4 // 2000 Hz
+
+	m, _, _ := newTestMouseFrom(t, fm)
+	defer m.Close()
+
+	if m.reportRateFeatureIndex != 0 || m.extRateFeatureIndex != 0x07 {
+		t.Fatalf("expected only extRateFeatureIndex resolved, got reportRateFeatureIndex=%d extRateFeatureIndex=%d", m.reportRateFeatureIndex, m.extRateFeatureIndex)
+	}
+
+	options := m.ReportRateOptions()
+	if len(options) != 2 || options[0] != 2000 || options[1] != 1000 {
+		t.Errorf("ReportRateOptions() = %v, want [2000, 1000]", options)
+	}
+
+	hz, err := m.ReportRate()
+	if err != nil {
+		t.Fatalf("ReportRate: %v", err)
+	}
+	if hz != 2000 {
+		t.Errorf("ReportRate() = %d, want 2000", hz)
+	}
+
+	if err := m.SetReportRate(1000); err != nil {
+		t.Fatalf("SetReportRate: %v", err)
+	}
+	if fm.extRateIndex != 3 {
+		t.Errorf("device rate index = %d, want 3 (1000 Hz)", fm.extRateIndex)
+	}
+}
+
+// TestBuildMouseWithoutRGB covers an LED-less mouse (the Superlight
+// family): buildMouse should still succeed, RGBSupported should report
+// false, and SetColor should error instead of panicking on a zero
+// feature index.
+func TestBuildMouseWithoutRGB(t *testing.T) {
+	fm := newFakeMouse()
+	delete(fm.features, featureColorLEDEffects)
+
+	m, _, _ := newTestMouseFrom(t, fm)
+	defer m.Close()
+
+	if m.ledFeatureIndex != 0 {
+		t.Errorf("expected no LED feature resolved, got index %d", m.ledFeatureIndex)
+	}
+	if m.RGBSupported() {
+		t.Error("RGBSupported() = true, want false for an LED-less mouse")
+	}
+	if err := m.SetColor(255, 255, 255); err == nil {
+		t.Error("expected SetColor to error on an LED-less mouse")
+	}
+}
+
+// TestBuildMousePrefersSelfReportedName covers DEVICE_TYPE_AND_NAME
+// (0x0005): when a device answers with its own marketing name, that
+// name wins over the product-ID-derived fallback.
+func TestBuildMousePrefersSelfReportedName(t *testing.T) {
+	fm := newFakeMouse()
+	fm.features[hidpp.FeatureDeviceTypeAndName] = 0x08
+	fm.deviceName = "PRO X SUPERLIGHT 2"
+
+	m, _, _ := newTestMouseFrom(t, fm)
+	defer m.Close()
+
+	if m.Info().Name != "PRO X SUPERLIGHT 2" {
+		t.Errorf("Info().Name = %q, want the self-reported name", m.Info().Name)
+	}
+}
+
+// TestBuildMouseFallsBackToProductIDName covers a device that doesn't
+// expose DEVICE_TYPE_AND_NAME: the caller-supplied fallback name (from
+// the product ID) is used instead.
+func TestBuildMouseFallsBackToProductIDName(t *testing.T) {
+	m, _, _ := newTestMouseFrom(t, newFakeMouse())
+	defer m.Close()
+
+	if m.Info().Name != "G Pro Wireless" {
+		t.Errorf("Info().Name = %q, want the fallback name", m.Info().Name)
 	}
 }

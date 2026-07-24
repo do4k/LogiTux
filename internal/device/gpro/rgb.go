@@ -6,6 +6,10 @@ import (
 	"logitux/internal/hidpp"
 )
 
+// RGBSupported implements device.RGBSupport: Superlight models have no
+// RGB lighting at all, so the GUI hides color controls for them.
+func (m *Mouse) RGBSupported() bool { return m.ledFeatureIndex != 0 }
+
 // COLOR_LED_EFFECTS (0x8070) function numbers.
 const (
 	ledFuncGetInfo           byte = 0x00
@@ -87,6 +91,9 @@ func claimLEDControl(conn *hidpp.Conn, deviceIndex, featureIndex byte) error {
 // SetColor implements device.RGBControl, setting the Logo LED to a static
 // color.
 func (m *Mouse) SetColor(r, g, b uint8) error {
+	if m.ledFeatureIndex == 0 {
+		return fmt.Errorf("gpro: %s has no RGB lighting", m.info.Name)
+	}
 	if err := claimLEDControl(m.conn, m.deviceIndex, m.ledFeatureIndex); err != nil {
 		return err
 	}

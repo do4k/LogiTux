@@ -22,8 +22,13 @@ const (
 	dpiStep = 50
 )
 
-// DPIRange implements device.DPIControl.
+// DPIRange implements device.DPIControl. Mice on the extended feature
+// report their true range at open time; the classic feature's range is
+// the G Pro Wireless's known HERO span.
 func (m *Mouse) DPIRange() (min, max, step int) {
+	if m.extDPIFeatureIndex != 0 {
+		return m.extDPI.min, m.extDPI.max, m.extDPI.step
+	}
 	return dpiMin, dpiMax, dpiStep
 }
 
@@ -31,6 +36,9 @@ func (m *Mouse) DPIRange() (min, max, step int) {
 // from the device (falling back to its default DPI if getSensorDpi
 // reports no override is set).
 func (m *Mouse) DPI() (int, error) {
+	if m.extDPIFeatureIndex != 0 {
+		return m.extendedDPI()
+	}
 	resp, err := m.conn.Call(m.deviceIndex, m.dpiFeatureIndex, dpiFuncGetDpi, []byte{dpiSensorIndex})
 	if err != nil {
 		return 0, fmt.Errorf("gpro: get DPI: %w", err)
@@ -48,6 +56,9 @@ func (m *Mouse) DPI() (int, error) {
 // SetDPI implements device.DPIControl. dpi is clamped to the sensor's
 // range and rounded to the nearest supported step.
 func (m *Mouse) SetDPI(dpi int) error {
+	if m.extDPIFeatureIndex != 0 {
+		return m.setExtendedDPI(dpi)
+	}
 	dpi = clampToStep(dpi, dpiMin, dpiMax, dpiStep)
 	params := []byte{dpiSensorIndex, byte(dpi >> 8), byte(dpi)}
 	if _, err := m.conn.Call(m.deviceIndex, m.dpiFeatureIndex, dpiFuncSetDpi, params); err != nil {

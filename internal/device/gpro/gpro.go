@@ -25,22 +25,38 @@ import (
 const vendorID = 0x046d
 
 const (
-	// productReceiver is the Logitech Lightspeed USB receiver the mouse is
-	// typically paired to.
+	// productReceiver is the Logitech Lightspeed USB receiver the mice
+	// are typically paired to.
 	productReceiver uint16 = 0xc539
-	// productWired is the mouse's own product ID when connected directly
-	// (wired or Bluetooth), addressed at HID++ device index 0xFF.
+	// productWired is the G Pro Wireless's own product ID when connected
+	// directly (wired or Bluetooth), addressed at HID++ device index 0xFF.
 	productWired uint16 = 0x4079
+	// Newer mice in the same family, connected directly. Product IDs per
+	// Solaar's descriptors; behind the Lightspeed receiver they enumerate
+	// under productReceiver like the G Pro Wireless does.
+	productSuperlight  uint16 = 0xc094 // PRO X SUPERLIGHT
+	productSuperlight2 uint16 = 0xc09b // PRO X SUPERLIGHT 2
 )
+
+// productNames maps direct-connection product IDs to a display name,
+// used when the device doesn't answer DEVICE_TYPE_AND_NAME (0x0005) —
+// when it does, its self-reported name wins (see buildMouse).
+var productNames = map[uint16]string{
+	productWired:       "G Pro Wireless",
+	productSuperlight:  "PRO X Superlight",
+	productSuperlight2: "PRO X Superlight 2",
+}
 
 // HID++ feature IDs used by this plugin. Feature *indexes* (which slot in
 // a given device's feature table implements them) are discovered at
 // runtime via hidpp.GetFeatureIndex; see buildMouse.
 const (
-	featureAdjustableDPI    uint16 = 0x2201
-	featureReportRate       uint16 = 0x8060
-	featureColorLEDEffects  uint16 = 0x8070
-	featureReprogControlsV4 uint16 = 0x1b04
+	featureAdjustableDPI      uint16 = 0x2201
+	featureExtendedDPI        uint16 = 0x2202 // successor to 0x2201 on newer mice
+	featureReportRate         uint16 = 0x8060
+	featureExtendedReportRate uint16 = 0x8061 // successor to 0x8060 on newer mice
+	featureColorLEDEffects    uint16 = 0x8070
+	featureReprogControlsV4   uint16 = 0x1b04
 )
 
 // probeTimeout bounds each Ping while hunting for which hidraw interface
@@ -52,7 +68,7 @@ const (
 var probeTimeout = 300 * time.Millisecond
 
 func init() {
-	device.Register(vendorID, []uint16{productReceiver, productWired}, open)
+	device.Register(vendorID, []uint16{productReceiver, productWired, productSuperlight, productSuperlight2}, open)
 }
 
 // Mouse is a device.Device for a connected G Pro Wireless.
@@ -62,12 +78,19 @@ type Mouse struct {
 	info        device.Info
 
 	dpiFeatureIndex byte
+	// extDPIFeatureIndex is set instead of dpiFeatureIndex on mice that
+	// implement EXTENDED_ADJUSTABLE_DPI (0x2202) rather than 0x2201.
+	extDPIFeatureIndex byte
+	extDPI             extDPIInfo
 
 	batteryFeatureIndex byte
 	batteryKind         hidpp.BatteryKind
 
 	reportRateFeatureIndex byte
-	reportRateOptions      []int // Hz, fastest (highest Hz) first
+	// extRateFeatureIndex is set instead of reportRateFeatureIndex on
+	// mice that implement 0x8061 rather than 0x8060.
+	extRateFeatureIndex byte
+	reportRateOptions   []int // Hz, fastest (highest Hz) first
 
 	ledFeatureIndex      byte
 	ledZoneIndex         byte
@@ -108,7 +131,7 @@ func open(backend hid.Backend, info hid.Info) (device.Device, error) {
 	switch info.ProductID {
 	case productReceiver:
 		return openViaReceiver(backend, info)
-	case productWired:
+	case productWired, productSuperlight, productSuperlight2:
 		return openDirect(backend, info)
 	default:
 		return nil, fmt.Errorf("gpro: unexpected product ID %04x", info.ProductID)
@@ -137,7 +160,7 @@ func openDirect(backend hid.Backend, info hid.Info) (device.Device, error) {
 	}
 	conn.SetTimeout(operationTimeout)
 
-	m, err := buildMouse(conn, hidpp.DeviceIndexDirect, info.Serial)
+	m, err := buildMouse(conn, hidpp.DeviceIndexDirect, info.Serial, productNames[info.ProductID], info.ProductID)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -194,7 +217,7 @@ func openViaReceiver(backend hid.Backend, info hid.Info) (device.Device, error) 
 		conn.SetTimeout(operationTimeout)
 
 		serial := resolveMouseSerial(backend, info.Serial, deviceIndex)
-		m, err := buildMouse(conn, deviceIndex, serial)
+		m, err := buildMouse(conn, deviceIndex, serial, productNames[productWired], productWired)
 		if err != nil {
 			conn.Close()
 			return nil, err
@@ -254,32 +277,82 @@ const operationTimeout = 2 * time.Second
 // "nice to have" battery reading should block DPI/report-rate/RGB from
 // working, so Battery() just reports a clear error on such a unit rather
 // than the device failing to open at all.
-func buildMouse(conn *hidpp.Conn, deviceIndex byte, serial string) (*Mouse, error) {
-	dpiIdx, err := requireFeature(conn, deviceIndex, featureAdjustableDPI, "Adjustable DPI")
+func buildMouse(conn *hidpp.Conn, deviceIndex byte, serial, fallbackName string, productID uint16) (*Mouse, error) {
+	// DPI: the classic feature (0x2201) on the G Pro Wireless generation,
+	// or its successor (0x2202) on newer mice (PRO X Superlight family),
+	// which implement 0x2202 *instead of* 0x2201.
+	dpiIdx, hasDPI, err := hidpp.GetFeatureIndex(conn, deviceIndex, featureAdjustableDPI)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gpro: look up Adjustable DPI feature: %w", err)
 	}
+	var extDPIIdx byte
+	var extDPI extDPIInfo
+	if !hasDPI {
+		dpiIdx = 0
+		extDPIIdx, err = requireFeature(conn, deviceIndex, featureExtendedDPI, "Extended Adjustable DPI")
+		if err != nil {
+			return nil, fmt.Errorf("gpro: device supports neither Adjustable DPI (0x2201) nor Extended Adjustable DPI (0x2202): %w", err)
+		}
+		extDPI, err = discoverExtendedDPI(conn, deviceIndex, extDPIIdx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	batteryIdx, battKind, err := hidpp.ResolveBatteryFeature(conn, deviceIndex)
 	if err != nil {
 		batteryIdx, battKind = 0, hidpp.BatteryKindNone
 	}
-	reportRateIdx, err := requireFeature(conn, deviceIndex, featureReportRate, "Report Rate")
+
+	// Report rate: same classic-or-extended split as DPI. The extended
+	// feature (0x8061) also covers the 2000-8000 Hz rates of high-polling
+	// mice, which 0x8060's millisecond-interval encoding can't express.
+	reportRateIdx, hasRate, err := hidpp.GetFeatureIndex(conn, deviceIndex, featureReportRate)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gpro: look up Report Rate feature: %w", err)
 	}
-	ledIdx, err := requireFeature(conn, deviceIndex, featureColorLEDEffects, "Color LED Effects")
-	if err != nil {
-		return nil, err
+	var extRateIdx byte
+	var rateOptions []int
+	if hasRate {
+		rateOptions, err = getReportRateOptions(conn, deviceIndex, reportRateIdx)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		reportRateIdx = 0
+		extRateIdx, err = requireFeature(conn, deviceIndex, featureExtendedReportRate, "Extended Report Rate")
+		if err != nil {
+			return nil, fmt.Errorf("gpro: device supports neither Report Rate (0x8060) nor Extended Report Rate (0x8061): %w", err)
+		}
+		rateOptions, err = getExtendedReportRateOptions(conn, deviceIndex, extRateIdx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	rateOptions, err := getReportRateOptions(conn, deviceIndex, reportRateIdx)
-	if err != nil {
-		return nil, err
+	// The logo LED is optional: Superlight models have no RGB at all, and
+	// that shouldn't block DPI/report rate from working. The GUI checks
+	// RGBSupported before showing color controls.
+	ledIdx, hasLED, err := hidpp.GetFeatureIndex(conn, deviceIndex, featureColorLEDEffects)
+	if err != nil || !hasLED {
+		ledIdx = 0
+	}
+	var ledZone ledZoneTarget
+	if ledIdx != 0 {
+		ledZone, err = discoverLogoZone(conn, deviceIndex, ledIdx)
+		if err != nil {
+			ledIdx = 0 // a logo zone we can't drive is as good as absent
+		}
 	}
 
-	ledZone, err := discoverLogoZone(conn, deviceIndex, ledIdx)
-	if err != nil {
-		return nil, err
+	// Prefer the device's self-reported marketing name; the product-ID
+	// fallback covers units that don't expose DEVICE_TYPE_AND_NAME.
+	name := fallbackName
+	if name == "" {
+		name = "G Pro Wireless"
+	}
+	if selfName, err := hidpp.GetDeviceName(conn, deviceIndex); err == nil && selfName != "" {
+		name = selfName
 	}
 
 	// Button remapping is optional like battery: not every unit exposes
@@ -298,16 +371,19 @@ func buildMouse(conn *hidpp.Conn, deviceIndex byte, serial string) (*Mouse, erro
 		conn:        conn,
 		deviceIndex: deviceIndex,
 		info: device.Info{
-			Name:      "G Pro Wireless",
+			Name:      name,
 			Kind:      device.KindMouse,
 			Serial:    serial,
 			VendorID:  vendorID,
-			ProductID: productWired,
+			ProductID: productID,
 		},
 		dpiFeatureIndex:        dpiIdx,
+		extDPIFeatureIndex:     extDPIIdx,
+		extDPI:                 extDPI,
 		batteryFeatureIndex:    batteryIdx,
 		batteryKind:            battKind,
 		reportRateFeatureIndex: reportRateIdx,
+		extRateFeatureIndex:    extRateIdx,
 		reportRateOptions:      rateOptions,
 		ledFeatureIndex:        ledIdx,
 		ledZoneIndex:           ledZone.zoneIndex,

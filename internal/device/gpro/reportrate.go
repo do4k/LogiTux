@@ -47,6 +47,9 @@ func (m *Mouse) ReportRateOptions() []int {
 
 // ReportRate implements device.ReportRateControl.
 func (m *Mouse) ReportRate() (int, error) {
+	if m.extRateFeatureIndex != 0 {
+		return m.extendedReportRate()
+	}
 	resp, err := m.conn.Call(m.deviceIndex, m.reportRateFeatureIndex, reportRateFuncGet, nil)
 	if err != nil {
 		return 0, fmt.Errorf("gpro: get report rate: %w", err)
@@ -60,6 +63,9 @@ func (m *Mouse) ReportRate() (int, error) {
 // SetReportRate implements device.ReportRateControl. hz is snapped to
 // whichever supported option is closest.
 func (m *Mouse) SetReportRate(hz int) error {
+	if m.extRateFeatureIndex != 0 {
+		return m.setExtendedReportRate(hz)
+	}
 	intervalMs := 1000 / closestOption(hz, m.reportRateOptions)
 	if _, err := m.conn.Call(m.deviceIndex, m.reportRateFeatureIndex, reportRateFuncSet, []byte{byte(intervalMs)}); err != nil {
 		return fmt.Errorf("gpro: set report rate: %w", err)

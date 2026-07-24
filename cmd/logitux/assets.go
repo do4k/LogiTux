@@ -88,8 +88,10 @@ var (
 // drawn for LogiTux — not Logitech's copyrighted marketing renders, which
 // an MIT-licensed repo can't redistribute. Products without an entry fall
 // back to a generic icon for their Kind.
+var gproArt = fyne.NewStaticResource("gpro.svg", gproArtSVG)
+
 var productArtByName = map[string]fyne.Resource{
-	"G Pro Wireless":                fyne.NewStaticResource("gpro.svg", gproArtSVG),
+	"G Pro Wireless":                gproArt,
 	"Litra Glow":                    fyne.NewStaticResource("litra-glow.svg", litraGlowArtSVG),
 	"Litra Beam":                    fyne.NewStaticResource("litra-beam.svg", litraBeamArtSVG),
 	"PRO X Wireless Gaming Headset": fyne.NewStaticResource("prox.svg", proxArtSVG),
@@ -173,7 +175,10 @@ func iconForKind(k device.Kind) fyne.Resource {
 	case device.KindLight:
 		return lightIcon
 	case device.KindMouse:
-		return mouseIcon
+		// The G Pro render doubles as a generic Logitech-mouse render for
+		// models without dedicated art (Superlight family etc.) — much
+		// closer to the real thing than the old line icon.
+		return gproArt
 	case device.KindHeadset:
 		return headsetIcon
 	case device.KindWebcam:
