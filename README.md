@@ -20,13 +20,23 @@ v1 supports:
 
 - **Litra Glow / Litra Beam** key lights — power, brightness, color
   temperature.
-- **G Pro Wireless** mouse (direct or via its Lightspeed receiver) — DPI,
-  report (polling) rate, and logo color always; battery and button
-  remapping on units whose firmware exposes the corresponding HID++
-  feature (see [Usage](#usage) — one of the two units this was tested
-  against doesn't expose either, evidently handling them through the
-  receiver's own protocol layer instead, so both are implemented as
-  optional and degrade gracefully rather than being guaranteed).
+- **G Pro Wireless, PRO X Superlight, and PRO X Superlight 2** mice
+  (direct or via a Lightspeed receiver) — DPI and report (polling) rate
+  always, logo color on units that have one (the Superlight family
+  doesn't); battery and button remapping on units whose firmware exposes
+  the corresponding HID++ feature (see [Usage](#usage) — one of the two
+  G Pro Wireless units this was tested against doesn't expose either,
+  evidently handling them through the receiver's own protocol layer
+  instead, so both are implemented as optional and degrade gracefully
+  rather than being guaranteed). Newer mice report DPI and report rate
+  through different HID++ features than the G Pro Wireless does (up to
+  8000 Hz, and DPI ranges read from the device instead of hardcoded);
+  LogiTux uses whichever the connected mouse implements, and shows the
+  device's own self-reported name when it has one. **Caveat:** the
+  Superlight-family support (both extended features, and the two new
+  product IDs) is implemented against a third-party reference
+  implementation's protocol decoding, not yet verified against physical
+  Superlight hardware, unlike the original G Pro Wireless path.
 - **PRO X Wireless Gaming Headset** — battery, sidetone, a full per-band
   equalizer (band count/frequencies/dB range are read from the device,
   not assumed), and a hardware mic noise-reduction toggle on units whose
@@ -187,11 +197,12 @@ restores normal clicking.
 cmd/logitux/             GUI entry point (Fyne): window, dashboard, device pages, systray
 internal/hid/            HID Backend interface (hid.go) + Linux hidraw impl
                            (hidraw_linux.go) and a no-op stub for other OSes (hid_stub.go)
-internal/hidpp/          HID++ 2.0 transport: feature calls, notifications, shared battery logic
+internal/hidpp/          HID++ 2.0 transport: feature calls, notifications, shared battery
+                           logic, device self-naming (DEVICE_TYPE_AND_NAME)
 internal/uinput/         Virtual input device for button remapping (Linux; stub elsewhere)
 internal/device/         Plugin registry and capability interfaces
 internal/device/litra/   Litra Glow/Beam plugin (simple vendor HID protocol)
-internal/device/gpro/    G Pro Wireless plugin (HID++ 2.0 protocol)
+internal/device/gpro/    G Pro Wireless / PRO X Superlight (1 & 2) plugin (HID++ 2.0 protocol)
 internal/device/prox/    PRO X Wireless Gaming Headset plugin (HID++ 2.0 protocol)
 internal/device/webcam/  C920/C922/C930e webcam plugin (V4L2 controls, not HID; Linux only)
 internal/v4l2/           Pure-Go V4L2 control ioctls: query/get/set on /dev/videoN
@@ -264,7 +275,10 @@ built on LogiTux's own pure-Go hidraw backend rather than `libhidapi`.
 HID++ 2.0 feature byte layouts used by the G Pro Wireless plugin were
 verified against [pwr-Solaar/Solaar](https://github.com/pwr-Solaar/Solaar),
 the most complete existing Linux HID++ implementation, rather than guessed
-from general protocol documentation.
+from general protocol documentation. The Superlight family's extended DPI
+(`0x2202`) and report rate (`0x8061`) features were cross-referenced
+against [AprilNEA/OpenLogi](https://github.com/AprilNEA/OpenLogi)
+(MIT/Apache-2.0), an independently written Rust HID++ implementation.
 
 ## License
 

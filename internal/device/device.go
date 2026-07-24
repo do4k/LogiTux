@@ -92,6 +92,16 @@ type RGBControl interface {
 	SetColor(r, g, b uint8) error
 }
 
+// RGBSupport optionally narrows RGBControl for plugins whose device type
+// always carries the methods but where individual models lack the LED
+// hardware (e.g. the gpro plugin covers both the RGB G Pro Wireless and
+// the LED-less Superlight models). The GUI hides RGB controls when
+// RGBSupported reports false; a device that implements RGBControl but
+// not RGBSupport is treated as supported.
+type RGBSupport interface {
+	RGBSupported() bool
+}
+
 // ButtonInfo describes one of a device's remappable physical controls.
 type ButtonInfo struct {
 	ID   uint16 // opaque, device-defined control ID

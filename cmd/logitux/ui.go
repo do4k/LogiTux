@@ -804,6 +804,13 @@ func lightingPanel(a *appState, d device.Device, info device.Info, serial string
 	bc, hasBrightness := d.(device.BrightnessControl)
 	tc, hasTemperature := d.(device.TemperatureControl)
 	rgb, hasRGB := d.(device.RGBControl)
+	if hasRGB {
+		// A plugin can carry the RGB methods for a whole family while
+		// individual models lack the LED (Superlight mice).
+		if s, ok := d.(device.RGBSupport); ok && !s.RGBSupported() {
+			hasRGB = false
+		}
+	}
 	if !hasPower && !hasBrightness && !hasTemperature && !hasRGB {
 		return nil
 	}
