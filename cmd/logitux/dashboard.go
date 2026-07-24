@@ -57,7 +57,8 @@ func buildDashboard(devices []device.Device, onSelect func(index int)) fyne.Canv
 		}
 		tiles[i] = newDeviceTile(d, name, func() { onSelect(index) })
 	}
-	grid := container.NewGridWrap(fyne.NewSize(tileWidth, tileHeight), tiles...)
+	grid := container.NewGridWrap(fyne.NewSize(tileWidth+20, tileHeight+20), tiles...)
+	grid.Layout = layout.NewGridWrapLayout(fyne.NewSize(tileWidth+20, tileHeight+20))
 	return container.NewVScroll(container.NewPadded(grid))
 }
 
@@ -87,9 +88,10 @@ func (t *deviceTile) CreateRenderer() fyne.WidgetRenderer {
 	t.bg = canvas.NewRectangle(colorCard)
 	t.bg.CornerRadius = 10
 
-	name := canvas.NewText(strings.ToUpper(t.displayName), colorForeground)
+	name := widget.NewLabel(strings.ToUpper(t.displayName))
+	name.Wrapping = fyne.TextWrapWord
 	name.TextStyle = fyne.TextStyle{Bold: true}
-	name.TextSize = theme.Size(theme.SizeNameText)
+	name.Alignment = fyne.TextAlignLeading
 
 	top := container.NewVBox(name, batteryRow(t.d))
 
@@ -102,8 +104,8 @@ func (t *deviceTile) CreateRenderer() fyne.WidgetRenderer {
 	bottom := container.NewHBox(layout.NewSpacer(), gear)
 
 	content := container.NewBorder(top, bottom, nil, nil, art)
-	pad := container.NewPadded(container.NewPadded(content))
-	return widget.NewSimpleRenderer(container.NewStack(t.bg, pad))
+	paddedContent := container.NewPadded(content)
+	return widget.NewSimpleRenderer(container.NewStack(t.bg, paddedContent))
 }
 
 // batteryRow renders a card's status line: battery percentage plus a
