@@ -110,6 +110,8 @@ func (f *fakeHeadsetDevice) EqualizerLevels() ([]int, error) {
 	return []int{0, 0, 0, 2, 4, 6, 6, 7, 7, 7}, nil
 }
 func (f *fakeHeadsetDevice) SetEqualizerLevels([]int) error { return nil }
+func (f *fakeHeadsetDevice) NoiseReduction() (bool, error)  { return true, nil }
+func (f *fakeHeadsetDevice) SetNoiseReduction(bool) error   { return nil }
 
 type fakeWebcamDevice struct {
 	fakeDevice

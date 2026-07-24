@@ -127,6 +127,13 @@ type EqualizerBand struct {
 	FrequencyHz int
 }
 
+// NoiseReductionControl is implemented by headsets with hardware
+// microphone noise reduction that can be toggled.
+type NoiseReductionControl interface {
+	NoiseReduction() (bool, error)
+	SetNoiseReduction(enabled bool) error
+}
+
 // EqualizerControl is implemented by devices with a hardware equalizer.
 // The band layout (count and frequencies) and dB range are fixed
 // properties of the hardware, discovered at connect time; SetLevels takes

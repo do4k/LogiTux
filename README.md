@@ -27,9 +27,10 @@ v1 supports:
   against doesn't expose either, evidently handling them through the
   receiver's own protocol layer instead, so both are implemented as
   optional and degrade gracefully rather than being guaranteed).
-- **PRO X Wireless Gaming Headset** — battery, sidetone, and a full
-  per-band equalizer (band count/frequencies/dB range are read from the
-  device, not assumed).
+- **PRO X Wireless Gaming Headset** — battery, sidetone, a full per-band
+  equalizer (band count/frequencies/dB range are read from the device,
+  not assumed), and a hardware mic noise-reduction toggle on units whose
+  firmware supports it (probed with a read; the toggle hides otherwise).
 - **C920 / C920 HD Pro / C922 Pro Stream / C930e** webcams — zoom,
   pan/tilt position, autofocus and manual focus, auto and manual
   exposure, and image tuning (brightness, contrast, saturation,
@@ -51,7 +52,8 @@ drops you back on the Dashboard. Device pages are laid out like G HUB's:
 an icon rail on the left groups the device's settings into sections —
 Sensitivity (DPI, report rate), Assignments (button remapping), Lighting
 (power, brightness, color temperature, RGB logo color), and Sound
-(sidetone, equalizer) — and only the sections a device actually supports
+(sidetone, mic noise reduction, equalizer) — and only the sections a
+device actually supports
 appear. The panel beside the rail holds the selected section's controls,
 and the rest of the page shows the battery level and a section-specific
 showcase. On a mouse's Sensitivity section, DPI is presented as G HUB's
